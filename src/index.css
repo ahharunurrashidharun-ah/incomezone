@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+html, body, #root {
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+html.dark, html.dark body, html.dark #root {
+  background-color: #0a0718;
+  color: #ffffff;
+}
+
+html.light, html.light body, html.light #root {
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+/* Force hardware acceleration on scroll elements */
+.hardware-accelerate {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+

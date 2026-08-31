@@ -1,0 +1,6 @@
+{
+  "name": "Income Zone",
+  "description": "A micro-job marketplace platform where users can earn money by completing simple online tasks and businesses can promote their services.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
