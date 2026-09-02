@@ -23,13 +23,14 @@ import {
   Eye
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase, toValidUUID, formatJobDisplayId } from '../lib/supabaseClient';
+import { supabase, toValidUUID, formatJobDisplayId, formatUserDisplayId } from '../lib/supabaseClient';
 import { submitJobProof, uploadFile } from '../lib/jobService';
+import { compressImage } from '../lib/imageCompression';
 import { getLocalJobs, getLocalAds, getLocalSubmissions, isTableMissingError } from '../lib/localFallbackStore';
 import toast from 'react-hot-toast';
 
 export default function FindJobPage() {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const [jobs, setJobs] = useState<any[]>([]);
   const [ads, setAds] = useState<any[]>([]);
   const [submittedJobIds, setSubmittedJobIds] = useState<Set<string>>(new Set());
@@ -218,6 +219,8 @@ export default function FindJobPage() {
   };
 
   useEffect(() => {
+    if (!user) return;
+
     fetchSubmittedIds();
     fetchActiveJobs();
     fetchActiveAds();
@@ -301,21 +304,30 @@ export default function FindJobPage() {
         const file = screenshotFiles[i];
         if (file) {
           try {
-            const url = await uploadFile(file, 'proofs');
+            const compressedFile = await compressImage(file, 1080, 0.6);
+            const url = await uploadFile(compressedFile, 'proofs');
             uploadedUrls.push(url);
-          } catch (uploadErr) {
-            console.warn('Screenshot upload fallback to preview URL:', uploadErr);
-            uploadedUrls.push(screenshotPreviews[i] || '');
+          } catch (uploadErr: any) {
+            console.error("Upload error:", uploadErr);
+            setSubmitError("Failed to upload image. Please try again or contact admin.");
+            setIsSubmitting(false);
+            return; // Halt the entire submission process
           }
         }
       }
+
+      const workerDisplayId = formatUserDisplayId(
+        user?.display_id || (user as any)?.displayId || profile?.display_id || (profile as any)?.displayId,
+        user?.uid
+      );
 
       await submitJobProof(
         selectedJob.id, 
         user.uid, 
         proofText.trim() || 'Completed as instructed',
         uploadedUrls[0] || undefined,
-        uploadedUrls
+        uploadedUrls,
+        workerDisplayId
       );
       
       setSubmitSuccess(true);
@@ -522,14 +534,24 @@ export default function FindJobPage() {
             </div>
           ) : (
             <div className="bg-white dark:bg-[#130b2c]/85 dark:backdrop-blur-xl border border-slate-200 dark:border-purple-500/20 rounded-3xl p-6 sm:p-8 shadow-sm dark:shadow-2xl dark:shadow-purple-950/50 space-y-6">
-              <div>
-                <h2 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                  <Send className="w-5 h-5 text-purple-600 dark:text-amber-400" />
-                  Submit Your Proof of Work
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-purple-300/70 font-medium mt-1">
-                  Follow the exact proof instructions requested by the employer below to receive your payment.
-                </p>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-purple-900/40">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <Send className="w-5 h-5 text-purple-600 dark:text-amber-400" />
+                    Submit Your Proof of Work
+                  </h2>
+                  <p className="text-xs text-slate-500 dark:text-purple-300/70 font-medium mt-1">
+                    Follow the exact proof instructions requested by the employer below to receive your payment.
+                  </p>
+                </div>
+                {user && (
+                  <div className="flex items-center gap-2 bg-purple-50 dark:bg-[#080412] px-3.5 py-1.5 rounded-xl border border-purple-200 dark:border-amber-400/30 self-start sm:self-auto shadow-xs">
+                    <span className="text-xs font-bold text-slate-600 dark:text-purple-300">Your Worker ID:</span>
+                    <span className="font-mono font-black text-sm text-purple-700 dark:text-amber-300">
+                      #{formatUserDisplayId(user?.display_id || (user as any)?.displayId || profile?.display_id, user?.uid)}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {submitSuccess && (
@@ -667,11 +689,21 @@ export default function FindJobPage() {
                 </div>
               )}
 
-              {/* Submit Button */}
+              {/* Submit Button & Worker Identity */}
               <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-4">
-                <p className="text-xs text-slate-500 dark:text-purple-300/70 font-medium">
-                  * Providing fake proof or incorrect details will lead to submission rejection.
-                </p>
+                <div className="space-y-1 text-center sm:text-left">
+                  <p className="text-xs text-slate-500 dark:text-purple-300/70 font-medium">
+                    * Providing fake proof or incorrect details will lead to submission rejection.
+                  </p>
+                  {user && (
+                    <div className="flex items-center justify-center sm:justify-start gap-1.5 text-xs text-slate-600 dark:text-purple-300">
+                      <span>Submitting as:</span>
+                      <span className="font-mono font-bold text-purple-700 dark:text-amber-300 bg-purple-50 dark:bg-[#080412] px-2 py-0.5 rounded border border-purple-200 dark:border-purple-800/40">
+                        User ID #{formatUserDisplayId(user?.display_id || (user as any)?.displayId || profile?.display_id, user?.uid)}
+                      </span>
+                    </div>
+                  )}
+                </div>
 
                 <button
                   onClick={handleApply}

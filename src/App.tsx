@@ -31,6 +31,11 @@ import AdminSubmissionsPage from './pages/admin/AdminSubmissionsPage';
 import AdminJobsPage from './pages/admin/AdminJobsPage';
 import AdminSettingsPage from './pages/admin/AdminSettingsPage';
 import AdminAdsPage from './pages/admin/AdminAdsPage';
+import TermsPage from './pages/TermsPage';
+import PrivacyPage from './pages/PrivacyPage';
+import RefundPage from './pages/RefundPage';
+import RulesPage from './pages/RulesPage';
+import ScrollToTop from './components/ScrollToTop';
 
 export default function App() {
   return (
@@ -38,11 +43,16 @@ export default function App() {
       <AuthProvider>
         <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
         <Router>
+          <ScrollToTop />
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignUpPage />} />
           <Route path="/register" element={<SignUpPage />} />
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/refund" element={<RefundPage />} />
+          <Route path="/rules" element={<RulesPage />} />
 
           {/* Admin Routes */}
           <Route path="/admin/login" element={<Navigate to="/login" replace />} />

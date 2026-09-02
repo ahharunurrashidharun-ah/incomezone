@@ -214,7 +214,7 @@ export default function AdminLayout() {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto relative z-10 transform-gpu hardware-accelerate">
+        <div className="flex-1 overflow-y-auto relative z-10">
           <Outlet />
         </div>
       </main>

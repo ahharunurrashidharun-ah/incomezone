@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, toValidUUID } from '../lib/supabaseClient';
 import { checkIsAdmin } from '../lib/adminConfig';
+import { compressImage } from '../lib/imageCompression';
 import { 
   ImagePlus, 
   Link as LinkIcon, 
@@ -120,16 +121,17 @@ export default function PostAdPage() {
       let imageUrl = '';
       if (image) {
         try {
-          const fileExt = image.name.split('.').pop() || 'png';
-          const fileName = `ads/${user.uid}/${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
-          const { error: uploadError } = await supabase.storage
+          const compressedFile = await compressImage(image, 1080, 0.6);
+          const fileExt = compressedFile.name.split('.').pop() || 'jpg';
+          const fileName = `${user.uid}/ads/${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
+          const { error: uploadError, data } = await supabase.storage
             .from('uploads')
-            .upload(fileName, image);
+            .upload(fileName, compressedFile);
 
-          if (!uploadError) {
+          if (!uploadError && data) {
             const { data: publicUrlData } = supabase.storage
               .from('uploads')
-              .getPublicUrl(fileName);
+              .getPublicUrl(data.path);
             imageUrl = publicUrlData.publicUrl;
           } else {
             if (imagePreview) imageUrl = imagePreview;

@@ -172,8 +172,6 @@ export default function PostedAdPage() {
         .from('ads')
         .update({
           expires_at: newExpiresAt.toISOString(),
-          plan_days: (renewAd.planDays || 0) + plan.days,
-          paid_amount: (renewAd.paidAmount || 0) + plan.price,
           status: 'active'
         })
         .eq('id', renewAd.adId);

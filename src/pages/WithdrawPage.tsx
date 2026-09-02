@@ -33,26 +33,54 @@ export default function WithdrawPage() {
 
   const fetchSettings = async () => {
     try {
-      const { data, error } = await supabase
+      let localSS = null;
+      try {
+        const str = localStorage.getItem('iz_payment_methods');
+        if (str) localSS = JSON.parse(str);
+      } catch(e) {}
+
+      
+      // Try to get payment methods from settings table
+      let { data, error } = await supabase
         .from('settings')
         .select('*')
-        .eq('id', 'deposit_methods')
+        .eq('key', 'deposit_methods')
         .maybeSingle();
+        
+      if (data && data.value) {
+        data = typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
+        // Normalize nested JSON format if it exists
+        if (data.bkash && typeof data.bkash === 'object') {
+          data = {
+            bkash_enabled: data.bkash.enabled,
+            bkash_number: data.bkash.number,
+            nagad_enabled: data.nagad.enabled,
+            nagad_number: data.nagad.number,
+            rocket_enabled: data.rocket.enabled,
+            rocket_number: data.rocket.number,
+          };
+        }
+      } else {
+        data = null;
+      }
 
-      if (!error && data) {
-        setMethods(data.value || data.data || data);
+
+      if (data) {
+        setMethods(data);
+      } else if (localSS) {
+        setMethods(localSS);
       } else {
         setMethods({
-          bkash: { enabled: true, number: '01700000000' },
-          nagad: { enabled: true, number: '01800000000' },
-          rocket: { enabled: true, number: '01900000000' },
+          bkash_enabled: true, bkash_number: '01700000000',
+          nagad_enabled: true, nagad_number: '01800000000',
+          rocket_enabled: true, rocket_number: '01900000000',
         });
       }
     } catch {
       setMethods({
-        bkash: { enabled: true, number: '01700000000' },
-        nagad: { enabled: true, number: '01800000000' },
-        rocket: { enabled: true, number: '01900000000' },
+        bkash_enabled: true, bkash_number: '01700000000',
+        nagad_enabled: true, nagad_number: '01800000000',
+        rocket_enabled: true, rocket_number: '01900000000',
       });
     }
   };
@@ -335,9 +363,9 @@ export default function WithdrawPage() {
                     className="w-full px-4 py-3 bg-white dark:bg-[#180d38] border border-slate-300 dark:border-purple-500/30 rounded-xl focus:ring-2 focus:ring-purple-600 dark:focus:ring-amber-400 focus:border-purple-600 dark:focus:border-amber-400 outline-none transition-all font-bold text-slate-900 dark:text-white"
                   >
                     <option value="" disabled>Select a method</option>
-                    {methods?.bkash?.enabled !== false && <option value="bKash">bKash</option>}
-                    {methods?.nagad?.enabled !== false && <option value="Nagad">Nagad</option>}
-                    {methods?.rocket?.enabled !== false && <option value="Rocket">Rocket</option>}
+                    {methods?.bkash_enabled !== false && <option value="bKash">bKash</option>}
+                    {methods?.nagad_enabled !== false && <option value="Nagad">Nagad</option>}
+                    {methods?.rocket_enabled !== false && <option value="Rocket">Rocket</option>}
                   </select>
                 </div>
                 <div>

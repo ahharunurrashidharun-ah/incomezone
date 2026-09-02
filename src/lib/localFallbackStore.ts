@@ -38,6 +38,8 @@ export interface LocalSubmission {
   id: string;
   job_id: string;
   worker_id: string;
+  worker_display_id?: string | number;
+  workerDisplayId?: string | number;
   proof_text: string;
   proof_screenshot_url?: string | null;
   proof_screenshot_urls?: string[];
@@ -219,14 +221,22 @@ export const saveLocalSubmission = (sub: any): any => {
   } catch {}
   return newSub;
 };
-export const updateLocalSubmission = (id: string, updates: any): any => {
+export const updateLocalSubmission = (id: string, updates: any, jobId?: string, workerId?: string): any => {
   try {
     const subs = getLocalSubmissions();
-    const idx = subs.findIndex(s => s.id === id);
-    if (idx >= 0) {
-      subs[idx] = { ...subs[idx], ...updates };
-      localStorage.setItem(STORAGE_KEYS.SUBMISSIONS, JSON.stringify(subs));
-      return subs[idx];
+    let updated = false;
+    const newSubs = subs.map(s => {
+      const matchId = s.id === id;
+      const matchJobAndWorker = Boolean(jobId && workerId && s.job_id === jobId && s.worker_id === workerId && s.status === 'pending');
+      const matchJobPending = Boolean(jobId && !workerId && s.job_id === jobId && s.status === 'pending');
+      if (matchId || matchJobAndWorker || matchJobPending) {
+        updated = true;
+        return { ...s, ...updates };
+      }
+      return s;
+    });
+    if (updated) {
+      localStorage.setItem(STORAGE_KEYS.SUBMISSIONS, JSON.stringify(newSubs));
     }
   } catch {}
   return { id, ...updates };

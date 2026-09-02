@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import LiveStats from '../components/LiveStats';
 import ThemeToggle from '../components/ThemeToggle';
+import Footer from '../components/Footer';
 import { supabase } from '../lib/supabaseClient';
 import { getLocalJobs, isTableMissingError } from '../lib/localFallbackStore';
 
@@ -45,13 +46,13 @@ export default function LandingPage() {
         .select('*')
         .eq('status', 'active')
         .order('price_per_task', { ascending: false })
-        .limit(10);
+        .limit(12);
 
       if (error && isTableMissingError(error)) {
         const local = getLocalJobs()
           .filter((j: any) => j.status === 'active')
           .sort((a: any, b: any) => Number(b.price_per_task || 0) - Number(a.price_per_task || 0))
-          .slice(0, 10)
+          .slice(0, 12)
           .map((j: any) => ({
             id: j.id,
             title: j.title || 'Micro Job Task',
@@ -80,7 +81,7 @@ export default function LandingPage() {
         const local = getLocalJobs()
           .filter((j: any) => j.status === 'active')
           .sort((a: any, b: any) => Number(b.price_per_task || 0) - Number(a.price_per_task || 0))
-          .slice(0, 10)
+          .slice(0, 12)
           .map((j: any) => ({
             id: j.id,
             title: j.title || 'Micro Job Task',
@@ -344,13 +345,13 @@ export default function LandingPage() {
             </div>
 
             {loadingJobs ? (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {[1, 2, 3].map((n) => (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => (
                   <div key={n} className="h-48 bg-slate-200 dark:bg-[#130b2c] rounded-3xl animate-pulse"></div>
                 ))}
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                 {featuredJobs.map((job) => (
                   <div
                     key={job.id}
@@ -447,50 +448,7 @@ export default function LandingPage() {
       </main>
 
       {/* 7. Professional Footer */}
-      <footer className="bg-slate-900 text-slate-300 dark:bg-[#080412] dark:text-purple-200/70 pt-16 pb-8 border-t border-slate-800 dark:border-purple-900/30">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 grid grid-cols-1 md:grid-cols-4 gap-8 mb-12">
-          <div>
-            <span className="text-2xl font-black tracking-tight text-white block mb-4">
-              Income<span className="text-amber-400">Zone</span>
-            </span>
-            <p className="text-sm font-medium text-slate-400 dark:text-purple-300/60 max-w-xs leading-relaxed">
-              The premier global micro-task platform empowering digital workers and providing targeted campaign reach.
-            </p>
-          </div>
-
-          <div>
-            <h4 className="text-white font-black mb-4 tracking-wide uppercase text-xs">Quick Links</h4>
-            <ul className="space-y-2.5 text-sm font-bold">
-              <li><Link to="/login" className="hover:text-amber-400 transition-colors">Login to Account</Link></li>
-              <li><Link to="/signup" className="hover:text-amber-400 transition-colors">Register Free</Link></li>
-              <li><a href="#how-it-works" className="hover:text-amber-400 transition-colors">How It Works</a></li>
-              <li><a href="#live-stats" className="hover:text-amber-400 transition-colors">Real-Time Stats</a></li>
-            </ul>
-          </div>
-
-          <div>
-            <h4 className="text-white font-black mb-4 tracking-wide uppercase text-xs">Legal & Terms</h4>
-            <ul className="space-y-2.5 text-sm font-bold">
-              <li><a href="#" className="hover:text-amber-400 transition-colors">Privacy Policy</a></li>
-              <li><a href="#" className="hover:text-amber-400 transition-colors">Terms of Service</a></li>
-              <li><a href="#" className="hover:text-amber-400 transition-colors">Refund Policy</a></li>
-              <li><a href="#" className="hover:text-amber-400 transition-colors">Anti-Spam Rules</a></li>
-            </ul>
-          </div>
-
-          <div>
-            <h4 className="text-white font-black mb-4 tracking-wide uppercase text-xs">Support</h4>
-            <ul className="space-y-2.5 text-sm font-bold">
-              <li><a href="#" className="hover:text-amber-400 transition-colors">Help Center</a></li>
-              <li><a href="#" className="hover:text-amber-400 transition-colors">Contact Support</a></li>
-            </ul>
-          </div>
-        </div>
-
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 border-t border-slate-800 dark:border-purple-900/40 flex flex-col sm:flex-row items-center justify-between text-xs font-bold text-slate-500 dark:text-purple-400/50 gap-4">
-          <p>© {new Date().getFullYear()} IncomeZone. All rights reserved.</p>
-        </div>
-      </footer>
+      <Footer />
     </div>
   );
 }

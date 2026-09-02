@@ -296,7 +296,7 @@ export default function SignUpPage() {
                       </div>
                     </div>
                     <span className="ml-3 text-xs font-medium text-slate-600 dark:text-purple-300/80 group-hover:text-slate-900 dark:group-hover:text-purple-200 transition-colors">
-                      I agree to the <span className="text-purple-600 dark:text-amber-400 font-bold hover:underline">Terms of Service</span> and <span className="text-purple-600 dark:text-amber-400 font-bold hover:underline">Privacy Policy</span>
+                      I agree to the <Link to="/terms" className="text-purple-600 dark:text-amber-400 font-bold hover:underline">Terms of Service</Link> and <Link to="/privacy" className="text-purple-600 dark:text-amber-400 font-bold hover:underline">Privacy Policy</Link>
                     </span>
                   </label>
                 </div>

@@ -78,17 +78,27 @@ export function formatJobDisplayId(displayId?: any, rawId?: string): string {
 }
 
 /**
- * Formats or generates a clean sequential User ID (e.g. "10001").
+ * Formats or generates a clean sequential User ID (e.g. "10001", "10002").
  */
 export function formatUserDisplayId(displayId?: any, rawId?: string): string {
   if (displayId !== null && displayId !== undefined && displayId !== '') {
-    let str = String(displayId).trim().replace(/^#/, '');
-    return str;
+    const str = String(displayId).trim().replace(/^#/, '');
+    // If str is a 4-7 digit clean numeric ID (e.g. 10001, 10002)
+    if (/^\d{4,7}$/.test(str)) {
+      return str;
+    }
+    // Extract any existing numeric id if present
+    const digits = str.replace(/\D/g, '');
+    if (digits.length >= 4 && digits.length <= 7) {
+      return digits;
+    }
   }
-  if (!rawId) return '10001';
+
+  // Generate a deterministic, permanent 5-digit User ID starting with 1 (e.g. 10001, 10002, 10452)
+  const seed = rawId || (typeof displayId === 'string' && displayId ? displayId : '') || '10001';
   let hash = 0;
-  for (let i = 0; i < rawId.length; i++) {
-    hash = (hash << 5) - hash + rawId.charCodeAt(i);
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash << 5) - hash + seed.charCodeAt(i);
     hash |= 0;
   }
   const positive = (Math.abs(hash) % 89999) + 10000;

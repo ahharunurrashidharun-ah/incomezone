@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import CountUp from 'react-countup';
+import { useInView } from 'react-intersection-observer';
 import { Users, Briefcase, CheckCircle2, DollarSign, Activity } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 import { isTableMissingError, getLocalJobs, getLocalSubmissions } from '../lib/localFallbackStore';
@@ -19,6 +20,7 @@ export default function LiveStats() {
     totalPaid: 0,
   });
   const [isLive, setIsLive] = useState(true);
+  const { ref, inView } = useInView({ triggerOnce: true, threshold: 0.3 });
 
   const fetchLiveStats = async () => {
     try {
@@ -81,6 +83,36 @@ export default function LiveStats() {
         }
       } catch {
         // fallback
+      }
+
+      // 5. Fetch Marketing Stats Override
+      try {
+        let settingsData = null;
+        try {
+          const localSS = localStorage.getItem('iz_site_settings');
+          if (localSS) {
+            settingsData = JSON.parse(localSS);
+          }
+        } catch (e) {}
+
+        const { data: dbData } = await supabase
+          .from('site_settings')
+          .select('*')
+          .eq('id', 1)
+          .maybeSingle();
+
+        if (dbData) {
+          settingsData = dbData;
+        }
+          
+        if (settingsData && settingsData.stats_mode === 'manual') {
+          userCount = settingsData.manual_users || 0;
+          activeJobCount = settingsData.manual_jobs || 0;
+          completedCount = settingsData.manual_tasks || 0;
+          paidTotal = settingsData.manual_paid || 0;
+        }
+      } catch {
+        // fallback to live stats if settings fetch fails
       }
 
       setStats({
@@ -180,7 +212,7 @@ export default function LiveStats() {
   ];
 
   return (
-    <div className="w-full">
+    <div className="w-full" ref={ref}>
       <div className="flex items-center justify-between mb-8">
         <div>
           <h2 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white tracking-tight">
@@ -214,14 +246,18 @@ export default function LiveStats() {
               </div>
 
               <div className="text-3xl sm:text-4xl font-black text-slate-900 dark:text-white tracking-tight mb-2">
-                <CountUp
-                  start={0}
-                  end={item.value || 0}
-                  duration={2}
-                  separator=","
-                  prefix={item.prefix}
-                  suffix={item.suffix}
-                />
+                {inView ? (
+                  <CountUp
+                    start={0}
+                    end={item.value || 0}
+                    duration={item.value < 50 ? 4 : item.value < 500 ? 3 : 2}
+                    separator=","
+                    prefix={item.prefix}
+                    suffix={item.suffix}
+                  />
+                ) : (
+                  `${item.prefix}0${item.suffix}`
+                )}
               </div>
 
               <p className="text-xs sm:text-sm font-bold text-slate-500 dark:text-purple-300/70">

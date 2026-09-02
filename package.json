@@ -24,6 +24,7 @@
     "react-countup": "^6.5.3",
     "react-dom": "^19.0.1",
     "react-hot-toast": "^2.6.0",
+    "react-intersection-observer": "^11.0.1",
     "react-router-dom": "^7.18.2",
     "vite": "^6.2.3"
   },

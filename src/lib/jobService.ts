@@ -36,6 +36,8 @@ export interface JobData {
 export interface SubmissionData {
   jobId: string;
   workerId: string;
+  workerDisplayId?: string | number;
+  workerName?: string;
   proofText: string;
   proofScreenshotUrl?: string;
   proofScreenshotUrls?: string[];
@@ -46,8 +48,11 @@ export interface SubmissionData {
  */
 export async function uploadFile(file: File, folder = 'proofs'): Promise<string> {
   try {
+    const { data: authData } = await supabase.auth.getUser();
+    const userId = authData?.user?.id || 'anonymous';
+    
     const fileExt = file.name.split('.').pop() || 'png';
-    const fileName = `${folder}/${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
+    const fileName = `${userId}/${folder}/${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
 
     const { data, error } = await supabase.storage
       .from('uploads')
@@ -57,7 +62,7 @@ export async function uploadFile(file: File, folder = 'proofs'): Promise<string>
       });
 
     if (error || !data) {
-      return URL.createObjectURL(file);
+      throw new Error(error?.message || "Storage upload failed");
     }
 
     const { data: publicUrlData } = supabase.storage
@@ -65,8 +70,8 @@ export async function uploadFile(file: File, folder = 'proofs'): Promise<string>
       .getPublicUrl(data.path);
 
     return publicUrlData.publicUrl;
-  } catch {
-    return URL.createObjectURL(file);
+  } catch (e) {
+    throw e;
   }
 }
 
@@ -281,6 +286,8 @@ export async function submitJob(subData: SubmissionData): Promise<string> {
       const newSub = saveLocalSubmission({
         job_id: subData.jobId,
         worker_id: subData.workerId,
+        worker_display_id: subData.workerDisplayId,
+        workerDisplayId: subData.workerDisplayId,
         proof_text: subData.proofText,
         proof_screenshot_url: subData.proofScreenshotUrl,
         status: 'pending',
@@ -322,22 +329,42 @@ export async function submitJob(subData: SubmissionData): Promise<string> {
       : (primaryScreenshotUrl ? [primaryScreenshotUrl] : []);
 
     let newSubId: string = '';
+    const resolvedWorkerDisplayId = subData.workerDisplayId ? String(subData.workerDisplayId) : undefined;
 
     try {
+      const insertData: any = {
+        job_id: subData.jobId,
+        worker_id: subData.workerId,
+        proof_text: subData.proofText,
+        proof_screenshot_url: primaryScreenshotUrl,
+        status: 'pending',
+      };
+      if (resolvedWorkerDisplayId) {
+        insertData.worker_display_id = resolvedWorkerDisplayId;
+      }
+
       const { data: newSub, error: subError } = await supabase
         .from('submissions')
-        .insert({
-          job_id: subData.jobId,
-          worker_id: subData.workerId,
-          proof_text: subData.proofText,
-          proof_screenshot_url: primaryScreenshotUrl,
-          status: 'pending',
-        })
+        .insert(insertData)
         .select('id')
         .single();
 
       if (!subError && newSub) {
         newSubId = newSub.id;
+      } else if (subError && resolvedWorkerDisplayId) {
+        // Retry without worker_display_id column if Supabase table lacks that specific column
+        const { data: retrySub } = await supabase
+          .from('submissions')
+          .insert({
+            job_id: subData.jobId,
+            worker_id: subData.workerId,
+            proof_text: subData.proofText,
+            proof_screenshot_url: primaryScreenshotUrl,
+            status: 'pending',
+          })
+          .select('id')
+          .single();
+        if (retrySub) newSubId = retrySub.id;
       }
     } catch {}
 
@@ -345,6 +372,8 @@ export async function submitJob(subData: SubmissionData): Promise<string> {
       id: newSubId,
       job_id: subData.jobId,
       worker_id: subData.workerId,
+      worker_display_id: resolvedWorkerDisplayId,
+      workerDisplayId: resolvedWorkerDisplayId,
       proof_text: subData.proofText,
       proof_screenshot_url: primaryScreenshotUrl,
       proof_screenshot_urls: allScreenshots,
@@ -373,6 +402,8 @@ export async function submitJob(subData: SubmissionData): Promise<string> {
       const newSub = saveLocalSubmission({
         job_id: subData.jobId,
         worker_id: subData.workerId,
+        worker_display_id: subData.workerDisplayId,
+        workerDisplayId: subData.workerDisplayId,
         proof_text: subData.proofText,
         proof_screenshot_url: subData.proofScreenshotUrl,
         status: 'pending',
@@ -388,11 +419,13 @@ export async function submitJobProof(
   workerId: string, 
   proofText: string, 
   proofScreenshotUrl?: string,
-  proofScreenshotUrls?: string[]
+  proofScreenshotUrls?: string[],
+  workerDisplayId?: string | number
 ): Promise<string> {
   return submitJob({ 
     jobId, 
     workerId, 
+    workerDisplayId,
     proofText, 
     proofScreenshotUrl: proofScreenshotUrl || (proofScreenshotUrls && proofScreenshotUrls[0]), 
     proofScreenshotUrls 
@@ -405,7 +438,7 @@ export async function submitJobProof(
  */
 export async function approveSubmission(submissionId: string, jobId: string, workerId: string): Promise<void> {
   try {
-    const { data: currentSub } = await supabase.from('submissions').select('status').eq('id', submissionId).single();
+    const { data: currentSub } = await supabase.from('submissions').select('status, proof_screenshot_url').eq('id', submissionId).single();
     if (currentSub?.status && currentSub.status !== 'pending') {
       throw new Error("This submission has already been approved or rejected!");
     }
@@ -433,7 +466,22 @@ export async function approveSubmission(submissionId: string, jobId: string, wor
       .update({ status: 'approved', reviewed_at: new Date().toISOString() })
       .eq('id', submissionId);
     
-    updateLocalSubmission(submissionId, { status: 'approved', reviewed_at: new Date().toISOString() });
+    if (currentSub?.proof_screenshot_url) {
+      let urls = [];
+      try { urls = JSON.parse(currentSub.proof_screenshot_url); }
+      catch(e) { urls = [currentSub.proof_screenshot_url]; }
+      
+      const filePaths = urls.map((url: string) => {
+        const parts = url.split('/uploads/');
+        return parts.length > 1 ? parts[1] : null;
+      }).filter(Boolean);
+
+      if (filePaths.length > 0) {
+        await supabase.storage.from('uploads').remove(filePaths as string[]);
+      }
+    }
+    
+    updateLocalSubmission(submissionId, { status: 'approved', reviewed_at: new Date().toISOString() }, jobId, workerId);
 
     // 3. Credit worker's earning balance
     const { data: worker } = await supabase
@@ -449,7 +497,7 @@ export async function approveSubmission(submissionId: string, jobId: string, wor
       .eq('id', workerId);
   } catch (err) {
     if (isTableMissingError(err)) {
-      updateLocalSubmission(submissionId, { status: 'approved' });
+      updateLocalSubmission(submissionId, { status: 'approved' }, jobId, workerId);
       return;
     }
     throw err;
@@ -462,6 +510,11 @@ export async function approveSubmission(submissionId: string, jobId: string, wor
  */
 export async function rejectSubmission(submissionId: string, jobId: string, reason?: string): Promise<void> {
   try {
+    const { data: currentSub } = await supabase.from('submissions').select('status, proof_screenshot_url').eq('id', submissionId).single();
+    if (currentSub?.status && currentSub.status !== 'pending') {
+      throw new Error("This submission has already been approved or rejected!");
+    }
+
     const { error: subError } = await supabase
       .from('submissions')
       .update({ 
@@ -479,7 +532,26 @@ export async function rejectSubmission(submissionId: string, jobId: string, reas
         updateLocalJob(jobId, { occupied_slots: newOccupied, status: 'active' });
       }
       return;
+    } else if (currentSub?.proof_screenshot_url) {
+      let urls = [];
+      try { urls = JSON.parse(currentSub.proof_screenshot_url); }
+      catch(e) { urls = [currentSub.proof_screenshot_url]; }
+      
+      const filePaths = urls.map((url: string) => {
+        const parts = url.split('/uploads/');
+        return parts.length > 1 ? parts[1] : null;
+      }).filter(Boolean);
+
+      if (filePaths.length > 0) {
+        await supabase.storage.from('uploads').remove(filePaths as string[]);
+      }
     }
+
+    updateLocalSubmission(submissionId, { 
+      status: 'rejected', 
+      reviewed_at: new Date().toISOString(),
+      ...(reason ? { rejection_reason: reason } : {})
+    }, jobId);
 
     // Reopen 1 slot on the job
     const { data: job } = await supabase

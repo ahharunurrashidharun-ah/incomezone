@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createJob, uploadFile } from '../lib/jobService';
+import { compressImage } from '../lib/imageCompression';
 import { useAuth } from '../contexts/AuthContext';
 import { 
   Briefcase, 
@@ -129,7 +130,8 @@ export default function PostJobPage() {
       let uploadedImageUrl: string | undefined = undefined;
       if (jobImageFile) {
         try {
-          uploadedImageUrl = await uploadFile(jobImageFile, 'job-images');
+          const compressedFile = await compressImage(jobImageFile, 1080, 0.6);
+          uploadedImageUrl = await uploadFile(compressedFile, 'job-images');
         } catch (uploadErr) {
           console.warn('Fallback: image upload failed', uploadErr);
           uploadedImageUrl = jobImagePreview;

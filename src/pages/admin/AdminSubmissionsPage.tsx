@@ -433,13 +433,10 @@ export default function AdminSubmissionsPage() {
 
             {/* Modal Body */}
             <div className="p-6 overflow-y-auto max-h-[calc(90vh-130px)] space-y-6">
-              {selectedSubmissionModal?.reviewed_at && (new Date().getTime() - new Date(selectedSubmissionModal.reviewed_at).getTime() > 3600000) ? (
-                <div className="flex flex-col items-center justify-center py-12 px-6 bg-slate-50 dark:bg-[#080412]/90 rounded-2xl border border-slate-200 dark:border-purple-900/40 text-center">
-                  <ImageOff className="w-16 h-16 text-slate-400 dark:text-slate-600 mb-4 opacity-50" />
-                  <h4 className="text-lg font-bold text-slate-800 dark:text-purple-200 mb-2">Screenshots Expired</h4>
-                  <p className="text-sm text-slate-500 dark:text-purple-300/70 max-w-md">
-                    Screenshots have expired and been removed for security/storage reasons. They are only visible for 1 hour after review.
-                  </p>
+              {selectedSubmissionModal?.status !== 'pending' ? (
+                <div className="flex flex-col items-center justify-center p-6 bg-slate-100 dark:bg-slate-800 rounded-lg border border-dashed border-slate-300 dark:border-slate-600">
+                  <ImageOff className="w-10 h-10 text-slate-400 mb-2"/>
+                  <span className="text-sm font-medium text-slate-500 dark:text-slate-400">Screenshot deleted after review</span>
                 </div>
               ) : selectedScreenshots.length === 1 ? (
                 <div className="flex flex-col items-center gap-4">
