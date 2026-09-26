@@ -1,8 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import { checkIsAdmin } from '../lib/adminConfig';
-import { useAuth, saveStoredSession } from '../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import { Eye, EyeOff, Mail, Lock, ArrowRight, AlertCircle, RefreshCw, CheckCircle2 } from 'lucide-react';
 
@@ -16,22 +15,6 @@ export default function LoginPage() {
   const [resending, setResending] = useState(false);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-  const location = useLocation();
-  const { user, loading: authLoading } = useAuth();
-
-  // If already logged in, redirect to intended page or jobs/admin
-  useEffect(() => {
-    if (!authLoading && user) {
-      const from = (location.state as any)?.from?.pathname;
-      if (from && from !== '/login') {
-        navigate(from, { replace: true });
-      } else if (user.role === 'admin' || checkIsAdmin(user)) {
-        navigate('/admin', { replace: true });
-      } else {
-        navigate('/jobs', { replace: true });
-      }
-    }
-  }, [user, authLoading, navigate, location]);
 
   const handleResendConfirmation = async () => {
     const cleanEmail = email.trim().toLowerCase();
@@ -77,36 +60,9 @@ export default function LoginPage() {
 
       toast.success('Signed in successfully! Welcome back.');
 
-      // 2. Immediately save active session to ensure instant persistence on rapid reload
+      // 2. Check admin access
       if (data.user) {
-        const isAdmin = checkIsAdmin({ email: cleanEmail, user_metadata: data.user.user_metadata });
-        const resolvedRole = isAdmin ? 'admin' : (data.user.user_metadata?.role || 'user');
-        const fallbackName = data.user.user_metadata?.name || cleanEmail.split('@')[0];
-        const fallbackUsername = data.user.user_metadata?.username || cleanEmail.split('@')[0];
-
-        const initialAppUser = {
-          ...data.user,
-          uid: data.user.id,
-          name: fallbackName,
-          username: fallbackUsername,
-          depositBalance: 0,
-          earningBalance: 0,
-          role: resolvedRole,
-          isLocked: false,
-        };
-        const initialProfile = {
-          id: data.user.id,
-          email: cleanEmail,
-          name: fallbackName,
-          username: fallbackUsername,
-          depositBalance: 0,
-          earningBalance: 0,
-          role: resolvedRole,
-          isLocked: false,
-        };
-        saveStoredSession(initialAppUser as any, initialProfile as any);
-
-        if (isAdmin) {
+        if (checkIsAdmin({ email: cleanEmail, user_metadata: data.user.user_metadata })) {
           navigate('/admin');
           return;
         }

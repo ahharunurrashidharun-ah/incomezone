@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { 
   Briefcase, 
   DollarSign, 
@@ -17,16 +17,13 @@ import {
   Globe,
   HelpCircle,
   Mail,
-  ChevronRight,
-  LayoutDashboard
+  ChevronRight
 } from 'lucide-react';
 import LiveStats from '../components/LiveStats';
 import ThemeToggle from '../components/ThemeToggle';
 import Footer from '../components/Footer';
 import { supabase } from '../lib/supabaseClient';
 import { getLocalJobs, isTableMissingError } from '../lib/localFallbackStore';
-import { useAuth } from '../contexts/AuthContext';
-import { checkIsAdmin } from '../lib/adminConfig';
 
 interface FeaturedJob {
   id: string;
@@ -39,21 +36,8 @@ interface FeaturedJob {
 }
 
 export default function LandingPage() {
-  const { user, loading: authLoading } = useAuth();
-  const navigate = useNavigate();
   const [featuredJobs, setFeaturedJobs] = useState<FeaturedJob[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(true);
-
-  // If user is already logged in, keep them inside their account directly
-  useEffect(() => {
-    if (!authLoading && user) {
-      if (user.role === 'admin' || checkIsAdmin(user)) {
-        navigate('/admin', { replace: true });
-      } else {
-        navigate('/jobs', { replace: true });
-      }
-    }
-  }, [user, authLoading, navigate]);
 
   const fetchFeaturedJobs = async () => {
     try {
@@ -148,31 +132,19 @@ export default function LandingPage() {
             <div className="flex items-center space-x-3 sm:space-x-4">
               <ThemeToggle />
 
-              {user ? (
-                <Link 
-                  to={user.role === 'admin' ? '/admin' : '/jobs'} 
-                  className="px-5 py-2.5 rounded-full bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-black shadow-lg shadow-amber-500/20 hover:from-amber-300 hover:to-yellow-400 transition-all duration-300 hover:scale-105 flex items-center gap-2"
-                >
-                  <LayoutDashboard className="w-4 h-4" />
-                  Dashboard
-                </Link>
-              ) : (
-                <>
-                  <Link 
-                    to="/login" 
-                    className="text-sm font-bold text-slate-700 dark:text-purple-200 hover:text-amber-600 dark:hover:text-white transition-colors px-3 py-2"
-                  >
-                    Login
-                  </Link>
+              <Link 
+                to="/login" 
+                className="text-sm font-bold text-slate-700 dark:text-purple-200 hover:text-amber-600 dark:hover:text-white transition-colors px-3 py-2"
+              >
+                Login
+              </Link>
 
-                  <Link 
-                    to="/signup" 
-                    className="px-5 py-2.5 rounded-full bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-black shadow-lg shadow-amber-500/20 hover:from-amber-300 hover:to-yellow-400 transition-all duration-300 hover:scale-105"
-                  >
-                    Register Now
-                  </Link>
-                </>
-              )}
+              <Link 
+                to="/signup" 
+                className="px-5 py-2.5 rounded-full bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-black shadow-lg shadow-amber-500/20 hover:from-amber-300 hover:to-yellow-400 transition-all duration-300 hover:scale-105"
+              >
+                Register Now
+              </Link>
             </div>
           </div>
         </div>

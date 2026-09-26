@@ -35,7 +35,6 @@ import TermsPage from './pages/TermsPage';
 import PrivacyPage from './pages/PrivacyPage';
 import RefundPage from './pages/RefundPage';
 import RulesPage from './pages/RulesPage';
-import BlogPage from './pages/BlogPage';
 import ScrollToTop from './components/ScrollToTop';
 
 export default function App() {
@@ -54,7 +53,6 @@ export default function App() {
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/refund" element={<RefundPage />} />
           <Route path="/rules" element={<RulesPage />} />
-          <Route path="/blog" element={<BlogPage />} />
 
           {/* Admin Routes */}
           <Route path="/admin/login" element={<Navigate to="/login" replace />} />

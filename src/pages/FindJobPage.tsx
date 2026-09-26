@@ -415,7 +415,7 @@ export default function FindJobPage() {
         {/* Expanded Job Detail Container (Width increased to max-w-4xl / max-w-5xl) */}
         <div className="max-w-4xl lg:max-w-5xl mx-auto w-full space-y-6">
           {/* Main Card: Title & Reward Header */}
-          <div className="bg-white dark:bg-[#130b2c] border border-slate-200 dark:border-purple-500/20 rounded-3xl p-6 sm:p-8 shadow-sm dark:shadow-2xl dark:shadow-purple-950/50">
+          <div className="bg-white dark:bg-[#130b2c]/85 dark:backdrop-blur-xl border border-slate-200 dark:border-purple-500/20 rounded-3xl p-6 sm:p-8 shadow-sm dark:shadow-2xl dark:shadow-purple-950/50">
             <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-4">
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
@@ -798,7 +798,7 @@ export default function FindJobPage() {
                     href={targetHref}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="relative group bg-white dark:bg-[#130b2c] hover:bg-slate-50 dark:hover:bg-[#180d38] border border-amber-200 dark:border-amber-400/30 hover:border-amber-400 rounded-2xl p-3.5 shadow-sm dark:shadow-lg dark:shadow-purple-950/40 transition-all duration-200 flex items-center gap-3.5 cursor-pointer overflow-hidden"
+                    className="relative group bg-white dark:bg-[#130b2c]/85 dark:backdrop-blur-md hover:bg-slate-50 dark:hover:bg-[#180d38] border border-amber-200 dark:border-amber-400/30 hover:border-amber-400 rounded-2xl p-3.5 shadow-sm dark:shadow-lg dark:shadow-purple-950/40 transition-all duration-200 flex items-center gap-3.5 cursor-pointer overflow-hidden"
                   >
                     {/* Ad Image / Thumbnail */}
                     {ad.imageUrl ? (
@@ -893,7 +893,7 @@ export default function FindJobPage() {
               <div 
                 key={job.id} 
                 onClick={() => handleSelectJob(job)}
-                className="bg-white dark:bg-[#130b2c] border border-slate-200 dark:border-purple-500/20 hover:border-purple-400 dark:hover:border-amber-400/40 rounded-2xl p-5 shadow-sm dark:shadow-lg dark:shadow-purple-950/40 hover:shadow-md transition-all duration-150 cursor-pointer group flex flex-col justify-between gap-3"
+                className="bg-white dark:bg-[#130b2c]/85 dark:backdrop-blur-md border border-slate-200 dark:border-purple-500/20 hover:border-purple-400 dark:hover:border-amber-400/40 rounded-2xl p-5 shadow-sm dark:shadow-lg dark:shadow-purple-950/40 hover:shadow-md transition-all duration-200 cursor-pointer group flex flex-col justify-between gap-3"
               >
                 {/* Card Top Row: Meta Tags & Reward */}
                 <div className="flex items-center justify-between gap-3">

@@ -11,8 +11,7 @@ import {
   Menu, 
   X, 
   User as UserIcon, 
-  Shield,
-  BookOpen 
+  Shield 
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, formatUserDisplayId } from '../lib/supabaseClient';
@@ -109,7 +108,7 @@ export default function DashboardLayout() {
   const isAdmin = checkIsAdmin(user) || checkIsAdmin(profile) || checkIsAdmin(userData);
 
   return (
-    <div className="bg-slate-50 dark:bg-[#0a0718] h-screen overflow-hidden text-slate-900 dark:text-white flex font-sans transition-colors duration-300">
+    <div className="bg-slate-50 dark:bg-[#0a0718] min-h-screen text-slate-900 dark:text-white flex font-sans transition-colors duration-300">
       {/* Mobile sidebar backdrop */}
       {isSidebarOpen && (
         <div 
@@ -203,7 +202,7 @@ export default function DashboardLayout() {
           </div>
 
           {/* Right Header Actions */}
-          <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-3">
             <ThemeToggle />
 
             {/* User Profile Dropdown */}
@@ -251,15 +250,6 @@ export default function DashboardLayout() {
                       <UserIcon className="w-4 h-4 mr-3 text-slate-400 dark:text-purple-400" />
                       My Profile
                     </Link>
-
-                    <Link
-                      to="/blog"
-                      onClick={() => setIsUserMenuOpen(false)}
-                      className="w-full flex items-center px-4 py-2.5 text-sm font-medium text-slate-600 dark:text-purple-200 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-purple-900/40 transition-colors"
-                    >
-                      <BookOpen className="w-4 h-4 mr-3 text-amber-500" />
-                      Blog
-                    </Link>
                     
                     <Link
                       to="/deposit"
@@ -297,7 +287,7 @@ export default function DashboardLayout() {
         </header>
 
         {/* Dashboard Page Content */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 relative z-10 smooth-scroll overscroll-contain hardware-accelerate">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 relative z-10">
           <Outlet />
         </main>
       </div>

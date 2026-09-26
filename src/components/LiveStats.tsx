@@ -234,7 +234,7 @@ export default function LiveStats() {
           return (
             <div
               key={item.id}
-              className="bg-white dark:bg-[#130b2c] border border-slate-200 dark:border-purple-500/20 rounded-3xl p-6 shadow-xl shadow-slate-200/50 dark:shadow-purple-950/50 hover:border-amber-400/50 transition-all duration-300 group hover:-translate-y-1"
+              className="bg-white dark:bg-[#130b2c]/80 backdrop-blur-xl border border-slate-200 dark:border-purple-500/20 rounded-3xl p-6 shadow-xl shadow-slate-200/50 dark:shadow-purple-950/50 hover:border-amber-400/50 transition-all duration-300 group hover:-translate-y-1"
             >
               <div className="flex items-center justify-between mb-4">
                 <div
