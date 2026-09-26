@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark bg-[#0a0718] text-white">
+<html lang="en" class="dark bg-[#0a0718] text-white overflow-x-clip">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -10,9 +10,32 @@
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <style>
+      html {
+        zoom: 0.75;
+        width: 100%;
+        min-height: 100%;
+        overflow-x: clip;
+        -webkit-overflow-scrolling: touch;
+      }
+      body {
+        width: 100%;
+        min-height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow-x: clip;
+      }
       html, body, #root {
-        background-color: #0a0718 !important;
+        width: 100%;
+        min-height: 100%;
+        background-color: #0a0718;
         color: #ffffff;
+      }
+      .h-screen {
+        height: calc(100vh / 0.75) !important;
+        max-height: calc(100vh / 0.75) !important;
+      }
+      .min-h-screen {
+        min-height: calc(100vh / 0.75) !important;
       }
     </style>
     <script>
@@ -30,7 +53,7 @@
       })();
     </script>
   </head>
-  <body class="bg-[#0a0718] text-white min-h-screen overflow-x-hidden antialiased">
+  <body class="bg-[#0a0718] text-white min-h-screen overflow-x-clip antialiased">
     <div id="root" class="min-h-screen bg-[#0a0718]"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

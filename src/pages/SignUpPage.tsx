@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
+import { useAuth, saveStoredSession } from '../contexts/AuthContext';
+import { checkIsAdmin } from '../lib/adminConfig';
 import toast from 'react-hot-toast';
 import { Eye, EyeOff, Mail, Lock, User, ArrowRight, AlertCircle, CheckCircle2, RefreshCw } from 'lucide-react';
 
@@ -18,6 +20,18 @@ export default function SignUpPage() {
   const [resending, setResending] = useState(false);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const { user, loading: authLoading } = useAuth();
+
+  // If already logged in, redirect to jobs or admin
+  useEffect(() => {
+    if (!authLoading && user) {
+      if (user.role === 'admin' || checkIsAdmin(user)) {
+        navigate('/admin', { replace: true });
+      } else {
+        navigate('/jobs', { replace: true });
+      }
+    }
+  }, [user, authLoading, navigate]);
 
   const handleResendConfirmation = async (targetEmail: string) => {
     if (!targetEmail) return;
@@ -79,7 +93,29 @@ export default function SignUpPage() {
       }
 
       // 2. Immediate active session -> redirect to dashboard
-      if (data.session) {
+      if (data.session && data.user) {
+        const initialAppUser = {
+          ...data.user,
+          uid: data.user.id,
+          name: cleanName || cleanUsername,
+          username: cleanUsername,
+          depositBalance: 0,
+          earningBalance: 0,
+          role: 'user',
+          isLocked: false,
+        };
+        const initialProfile = {
+          id: data.user.id,
+          email: cleanEmail,
+          name: cleanName || cleanUsername,
+          username: cleanUsername,
+          depositBalance: 0,
+          earningBalance: 0,
+          role: 'user',
+          isLocked: false,
+        };
+        saveStoredSession(initialAppUser as any, initialProfile as any);
+
         toast.success('Account created successfully! Welcome to IncomeZone.');
         navigate('/jobs');
         return;
@@ -91,7 +127,29 @@ export default function SignUpPage() {
         password,
       });
 
-      if (!signInErr && signInData.session) {
+      if (!signInErr && signInData.session && signInData.user) {
+        const initialAppUser = {
+          ...signInData.user,
+          uid: signInData.user.id,
+          name: cleanName || cleanUsername,
+          username: cleanUsername,
+          depositBalance: 0,
+          earningBalance: 0,
+          role: 'user',
+          isLocked: false,
+        };
+        const initialProfile = {
+          id: signInData.user.id,
+          email: cleanEmail,
+          name: cleanName || cleanUsername,
+          username: cleanUsername,
+          depositBalance: 0,
+          earningBalance: 0,
+          role: 'user',
+          isLocked: false,
+        };
+        saveStoredSession(initialAppUser as any, initialProfile as any);
+
         toast.success('Account created successfully! Welcome to IncomeZone.');
         navigate('/jobs');
         return;

@@ -273,7 +273,7 @@ export default function MyJobsPage() {
             try {
               const { data: workersData } = await supabase
                 .from('users')
-                .select('id, display_id, displayId')
+                .select('id, display_id')
                 .in('id', workerIds);
 
               (workersData || []).forEach((w: any) => {
