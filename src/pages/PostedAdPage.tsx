@@ -199,7 +199,7 @@ export default function PostedAdPage() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="max-w-6xl mx-auto pb-24 sm:pb-28">
       <div className="mb-8">
         <h1 className="text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight">Posted Ads</h1>
         <p className="text-slate-500 dark:text-purple-300/60 text-sm mt-1 font-bold">Manage your active and expired advertisement campaigns.</p>

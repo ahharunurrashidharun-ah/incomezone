@@ -391,7 +391,7 @@ export default function FindJobPage() {
     const job = selectedJob;
 
     return (
-      <div className="w-full space-y-6 pb-12">
+      <div className="w-full space-y-6 pb-24 sm:pb-28">
         {/* Navigation Bar */}
         <div className="max-w-4xl lg:max-w-5xl mx-auto w-full flex items-center justify-between">
           <button
@@ -757,7 +757,7 @@ export default function FindJobPage() {
   // DEFAULT JOBS LIST VIEW (Royal Midnight Theme)
   // -------------------------------------------------------------
   return (
-    <div className="w-full space-y-6">
+    <div className="w-full space-y-6 pb-24 sm:pb-28">
       {/* Centered Header */}
       <div className="max-w-4xl lg:max-w-5xl mx-auto w-full space-y-5">
         <div>

@@ -79,7 +79,7 @@ export default function ProfilePage() {
   };
 
   return (
-    <div className="max-w-2xl mx-auto py-8">
+    <div className="max-w-2xl mx-auto py-8 pb-24 sm:pb-28">
       <div className="bg-white dark:bg-[#130b2c]/60 dark:backdrop-blur-xl border border-slate-200 dark:border-purple-500/20 rounded-3xl shadow-sm dark:shadow-lg dark:shadow-purple-900/20 overflow-hidden">
         <div className="p-6 sm:p-8">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6 pb-4 border-b border-slate-100 dark:border-purple-900/40">

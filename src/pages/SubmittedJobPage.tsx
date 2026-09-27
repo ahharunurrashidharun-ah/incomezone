@@ -222,7 +222,7 @@ export default function SubmittedJobPage() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6 pb-24 sm:pb-28">
       <div>
         <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white tracking-tight">Submitted Jobs</h1>
         <p className="text-slate-500 dark:text-purple-300/70 text-sm mt-1 font-medium">Track the real-time status of all your completed tasks.</p>

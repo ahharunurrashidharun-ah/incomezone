@@ -109,7 +109,7 @@ export default function DashboardLayout() {
   const isAdmin = checkIsAdmin(user) || checkIsAdmin(profile) || checkIsAdmin(userData);
 
   return (
-    <div className="bg-slate-50 dark:bg-[#0a0718] h-screen overflow-hidden text-slate-900 dark:text-white flex font-sans transition-colors duration-300">
+    <div className="bg-slate-50 dark:bg-[#0a0718] h-[100dvh] min-h-screen overflow-hidden text-slate-900 dark:text-white flex font-sans transition-colors duration-300">
       {/* Mobile sidebar backdrop */}
       {isSidebarOpen && (
         <div 
@@ -297,7 +297,7 @@ export default function DashboardLayout() {
         </header>
 
         {/* Dashboard Page Content */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 relative z-10 smooth-scroll overscroll-contain hardware-accelerate">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 pb-24 sm:pb-28 lg:pb-20 relative z-10 smooth-scroll overscroll-contain hardware-accelerate">
           <Outlet />
         </main>
       </div>

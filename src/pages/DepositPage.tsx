@@ -291,7 +291,7 @@ export default function DepositPage() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto space-y-8">
+    <div className="max-w-6xl mx-auto space-y-8 pb-24 sm:pb-28">
       <div>
         <h1 className="text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight">Deposit Funds</h1>
         <p className="text-slate-500 dark:text-purple-300/60 text-sm mt-1 font-medium">Add funds to your deposit balance to post jobs and advertisements.</p>

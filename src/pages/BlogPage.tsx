@@ -326,7 +326,7 @@ export default function BlogPage() {
       </section>
 
       {/* 4. MAIN BLOG GRID SECTION */}
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-10 sm:py-14">
+      <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-10 sm:py-14 pb-24 sm:pb-28">
         {filteredPosts.length === 0 ? (
           <div className="text-center py-20 bg-white dark:bg-[#120a2c]/40 border border-slate-200 dark:border-purple-900/30 rounded-3xl p-8 max-w-md mx-auto shadow-sm">
             <div className="w-14 h-14 rounded-2xl bg-purple-100 dark:bg-purple-900/40 border border-purple-200 dark:border-purple-500/30 flex items-center justify-center mx-auto mb-4 text-purple-600 dark:text-purple-300">

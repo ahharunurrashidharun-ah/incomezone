@@ -3,7 +3,6 @@
 @custom-variant dark (&:is(.dark *));
 
 html {
-  zoom: 0.75;
   width: 100%;
   min-height: 100%;
   -webkit-text-size-adjust: 100%;
@@ -29,15 +28,7 @@ html, body, #root {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Ensure full screen coverage for zoom: 0.75 without blank white/black space */
-.h-screen {
-  height: calc(100vh / 0.75) !important;
-  max-height: calc(100vh / 0.75) !important;
-}
 
-.min-h-screen {
-  min-height: calc(100vh / 0.75) !important;
-}
 
 html.dark, html.dark body, html.dark #root {
   background-color: #0a0718;

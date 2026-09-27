@@ -120,7 +120,7 @@ export default function AdminLayout() {
   ];
 
   return (
-    <div className="bg-slate-50 dark:bg-[#0a0718] min-h-screen flex font-sans text-slate-900 dark:text-white selection:bg-purple-500/30 selection:text-white">
+    <div className="bg-slate-50 dark:bg-[#0a0718] min-h-screen h-[100dvh] flex font-sans text-slate-900 dark:text-white selection:bg-purple-500/30 selection:text-white overflow-hidden">
       {/* Mobile/Overlay background for sidebar */}
       {sidebarOpen && (
         <div 
@@ -199,7 +199,7 @@ export default function AdminLayout() {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 h-screen overflow-hidden flex flex-col relative bg-slate-50 dark:bg-[#0a0718]">
+      <main className="flex-1 h-full overflow-hidden flex flex-col relative bg-slate-50 dark:bg-[#0a0718]">
         {/* Background glow effects for the main area */}
         <div className="absolute top-0 right-0 w-full h-[500px] bg-purple-100/50 dark:bg-purple-900/10 rounded-full blur-[120px] pointer-events-none -translate-y-1/2"></div>
         
@@ -223,7 +223,7 @@ export default function AdminLayout() {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto overscroll-contain relative z-10">
+        <div className="flex-1 overflow-y-auto overscroll-contain relative z-10 p-4 sm:p-6 pb-24 sm:pb-28">
           <Outlet />
         </div>
       </main>

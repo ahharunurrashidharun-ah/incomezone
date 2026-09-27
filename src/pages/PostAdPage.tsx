@@ -201,7 +201,7 @@ export default function PostAdPage() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6 hardware-accelerate">
+    <div className="max-w-4xl mx-auto space-y-6 pb-24 sm:pb-28 hardware-accelerate">
       {/* Header */}
       <div>
         <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white tracking-tight flex items-center gap-3">
