@@ -3,6 +3,7 @@
 @custom-variant dark (&:is(.dark *));
 
 html {
+  font-size: 80%;
   width: 100%;
   min-height: 100%;
   -webkit-text-size-adjust: 100%;
@@ -18,6 +19,7 @@ body {
   overscroll-behavior-y: auto;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 html, body, #root {
