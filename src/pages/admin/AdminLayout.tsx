@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
+import { Outlet, Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { 
   LayoutDashboard, 
   Users, 
@@ -84,6 +84,15 @@ export default function AdminLayout() {
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-amber-400"></div>
       </div>
     );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  const isAdminUser = checkIsAdmin(user) || user.role === 'admin';
+  if (!isAdminUser) {
+    return <Navigate to="/jobs" replace />;
   }
 
   const handleLogout = async () => {
@@ -214,7 +223,7 @@ export default function AdminLayout() {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto relative z-10">
+        <div className="flex-1 overflow-y-auto overscroll-contain relative z-10">
           <Outlet />
         </div>
       </main>

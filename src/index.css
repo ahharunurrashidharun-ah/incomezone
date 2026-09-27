@@ -2,12 +2,41 @@
 
 @custom-variant dark (&:is(.dark *));
 
+html {
+  zoom: 0.75;
+  width: 100%;
+  min-height: 100%;
+  -webkit-text-size-adjust: 100%;
+  overflow-x: clip;
+  scroll-behavior: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+body {
+  width: 100%;
+  min-height: 100%;
+  overflow-x: clip;
+  overscroll-behavior-y: auto;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 html, body, #root {
+  width: 100%;
   min-height: 100%;
   margin: 0;
   padding: 0;
   -webkit-tap-highlight-color: transparent;
-  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Ensure full screen coverage for zoom: 0.75 without blank white/black space */
+.h-screen {
+  height: calc(100vh / 0.75) !important;
+  max-height: calc(100vh / 0.75) !important;
+}
+
+.min-h-screen {
+  min-height: calc(100vh / 0.75) !important;
 }
 
 html.dark, html.dark body, html.dark #root {
@@ -20,10 +49,16 @@ html.light, html.light body, html.light #root {
   color: #0f172a;
 }
 
-/* Force hardware acceleration on scroll elements */
-.hardware-accelerate {
+/* Force hardware acceleration on scroll and fixed elements to eliminate scroll lag */
+.hardware-accelerate,
+header.fixed,
+header.sticky,
+[class*="sticky"],
+header[class*="backdrop-blur"] {
   transform: translateZ(0);
+  -webkit-transform: translateZ(0);
   backface-visibility: hidden;
-  perspective: 1000px;
+  -webkit-backface-visibility: hidden;
 }
+
 

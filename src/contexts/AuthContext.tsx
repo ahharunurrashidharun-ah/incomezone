@@ -49,10 +49,80 @@ const AuthContext = createContext<AuthContextType>({
   updateBalances: () => {},
 });
 
+const AUTH_SESSION_KEY = 'iz_auth_session';
+const SESSION_TIMEOUT_MS = 3 * 60 * 60 * 1000; // 3 hours in milliseconds
+
+interface StoredSession {
+  user: AppUser;
+  profile: UserProfile;
+  lastActivityAt: number;
+}
+
+export const getValidStoredSession = (): { user: AppUser; profile: UserProfile } | null => {
+  try {
+    const raw = localStorage.getItem(AUTH_SESSION_KEY);
+    if (!raw) return null;
+    const parsed: StoredSession = JSON.parse(raw);
+    if (!parsed || !parsed.user || !parsed.profile) return null;
+
+    const now = Date.now();
+    const lastActivity = Number(parsed.lastActivityAt || 0);
+
+    // If more than 3 hours have passed, expire the session
+    if (now - lastActivity > SESSION_TIMEOUT_MS) {
+      localStorage.removeItem(AUTH_SESSION_KEY);
+      return null;
+    }
+
+    // Touch last activity timestamp
+    parsed.lastActivityAt = now;
+    localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(parsed));
+    return { user: parsed.user, profile: parsed.profile };
+  } catch {
+    return null;
+  }
+};
+
+export const saveStoredSession = (user: AppUser, profile: UserProfile) => {
+  try {
+    const payload: StoredSession = {
+      user,
+      profile,
+      lastActivityAt: Date.now(),
+    };
+    localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(payload));
+  } catch (e) {
+    console.warn('Failed to save session to storage:', e);
+  }
+};
+
+export const clearStoredSession = () => {
+  try {
+    localStorage.removeItem(AUTH_SESSION_KEY);
+  } catch {}
+};
+
+let lastTouchTime = 0;
+export const touchSessionActivity = () => {
+  const now = Date.now();
+  if (now - lastTouchTime < 15000) return; // Throttle storage writes to once every 15s
+  lastTouchTime = now;
+  try {
+    const raw = localStorage.getItem(AUTH_SESSION_KEY);
+    if (!raw) return;
+    const parsed: StoredSession = JSON.parse(raw);
+    if (parsed) {
+      parsed.lastActivityAt = now;
+      localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(parsed));
+    }
+  } catch {}
+};
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<AppUser | null>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState(true);
+  const initialSession = getValidStoredSession();
+  const [user, setUser] = useState<AppUser | null>(initialSession ? initialSession.user : null);
+  const [profile, setProfile] = useState<UserProfile | null>(initialSession ? initialSession.profile : null);
+  const [loading, setLoading] = useState<boolean>(!initialSession);
 
   const fetchProfile = async (authUserId: string, authUser: User) => {
     try {
@@ -144,9 +214,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         createdAt: userRow.created_at || userRow.createdAt || new Date().toISOString(),
       };
       
-      setProfile(mappedProfile);
-      
-      setUser({
+      const appUser: AppUser = {
         ...authUser,
         uid: authUser.id,
         display_id: mappedProfile.display_id,
@@ -157,7 +225,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         earningBalance: mappedProfile.earningBalance,
         role: mappedProfile.role,
         isLocked: mappedProfile.isLocked,
-      });
+      };
+
+      setProfile(mappedProfile);
+      setUser(appUser);
+      saveStoredSession(appUser, mappedProfile);
 
     } catch (err) {
       console.error('Failed to resolve user profile:', err);
@@ -165,16 +237,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const email = authUser.email || '';
       const fallbackUser = authUser.user_metadata?.username || email.split('@')[0] || 'user';
       const fallbackRole = checkIsAdmin({ email, username: fallbackUser, user_metadata: authUser.user_metadata }) ? 'admin' : 'user';
-      setUser({
-        ...authUser,
-        uid: authUser.id,
+      const fallbackProfile: UserProfile = {
+        id: authUser.id,
+        email,
         name: authUser.user_metadata?.name || email.split('@')[0] || 'User',
         username: fallbackUser,
         depositBalance: 0,
         earningBalance: 0,
         role: fallbackRole,
         isLocked: false,
-      });
+      };
+      const fallbackAppUser: AppUser = {
+        ...authUser,
+        uid: authUser.id,
+        name: fallbackProfile.name,
+        username: fallbackProfile.username,
+        depositBalance: 0,
+        earningBalance: 0,
+        role: fallbackRole,
+        isLocked: false,
+      };
+      setUser(fallbackAppUser);
+      setProfile(fallbackProfile);
+      saveStoredSession(fallbackAppUser, fallbackProfile);
     }
   };
 
@@ -184,6 +269,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!prev) return prev;
       const newDeposit = Math.max(0, prev.depositBalance + depositChange);
       const newEarning = Math.max(0, prev.earningBalance + earningChange);
+      const updatedProfile = {
+        ...prev,
+        depositBalance: newDeposit,
+        earningBalance: newEarning,
+      };
+
+      // Keep stored session in sync with latest balances
+      if (user) {
+        const updatedUser = {
+          ...user,
+          depositBalance: newDeposit,
+          earningBalance: newEarning,
+        };
+        setUser(updatedUser);
+        saveStoredSession(updatedUser, updatedProfile);
+      }
       
       // Update Supabase in background
       (async () => {
@@ -204,11 +305,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       })();
 
-      return {
-        ...prev,
-        depositBalance: newDeposit,
-        earningBalance: newEarning,
-      };
+      return updatedProfile;
     });
   };
 
@@ -219,6 +316,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
+    clearStoredSession();
     try {
       await supabase.auth.signOut();
     } catch (e) {
@@ -231,8 +329,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let mounted = true;
 
+    // 1. Initial auth check
     const initializeAuth = async () => {
       try {
+        // Check if stored session has exceeded 3 hours
+        const validSession = getValidStoredSession();
+        if (!validSession) {
+          clearStoredSession();
+          if (mounted) {
+            setUser(null);
+            setProfile(null);
+            setLoading(false);
+          }
+          return;
+        }
+
+        // Active session under 3 hours is preserved
+        if (mounted) {
+          setUser(validSession.user);
+          setProfile(validSession.profile);
+        }
+
+        // Validate or refresh with Supabase in background
         const { data: { session }, error } = await supabase.auth.getSession();
         if (error) throw error;
         
@@ -248,12 +366,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     initializeAuth();
 
+    // 2. Listen to Supabase auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
+      async (event, session) => {
         if (session?.user) {
           if (mounted) await fetchProfile(session.user.id, session.user);
-        } else {
+        } else if (event === 'SIGNED_OUT') {
+          clearStoredSession();
           if (mounted) {
+            setUser(null);
+            setProfile(null);
+          }
+        } else {
+          // If event has no active session, ensure local session is checked
+          const valid = getValidStoredSession();
+          if (!valid && mounted) {
             setUser(null);
             setProfile(null);
           }
@@ -262,9 +389,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     );
 
+    // 3. User activity tracking to keep session alive during active usage
+    const handleUserActivity = () => {
+      touchSessionActivity();
+    };
+
+    window.addEventListener('mousedown', handleUserActivity, { passive: true });
+    window.addEventListener('keydown', handleUserActivity, { passive: true });
+    window.addEventListener('touchstart', handleUserActivity, { passive: true });
+
+    // 4. Inactivity checker: runs every 30 seconds to automatically logout after 3 hours of inactivity
+    const inactivityInterval = setInterval(() => {
+      const activeSession = getValidStoredSession();
+      if (!activeSession) {
+        // 3 hours expired!
+        const hadUser = localStorage.getItem(AUTH_SESSION_KEY) !== null || user !== null;
+        if (hadUser) {
+          clearStoredSession();
+          if (mounted) {
+            setUser(null);
+            setProfile(null);
+          }
+        }
+      }
+    }, 30000);
+
     return () => {
       mounted = false;
       subscription.unsubscribe();
+      window.removeEventListener('mousedown', handleUserActivity);
+      window.removeEventListener('keydown', handleUserActivity);
+      window.removeEventListener('touchstart', handleUserActivity);
+      clearInterval(inactivityInterval);
     };
   }, []);
 
