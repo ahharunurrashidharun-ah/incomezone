@@ -27,7 +27,9 @@ import { supabase, toValidUUID, formatJobDisplayId, formatUserDisplayId } from '
 import { submitJobProof, uploadFile } from '../lib/jobService';
 import { compressImage } from '../lib/imageCompression';
 import { getLocalJobs, getLocalAds, getLocalSubmissions, isTableMissingError } from '../lib/localFallbackStore';
+import { extractJobImageUrl, cleanJobDescription } from '../lib/jobImages';
 import toast from 'react-hot-toast';
+import { JOB_CATEGORIES } from '../constants/jobCategories';
 
 export default function FindJobPage() {
   const { user, profile } = useAuth();
@@ -43,40 +45,68 @@ export default function FindJobPage() {
   const [screenshotFiles, setScreenshotFiles] = useState<(File | null)[]>([]);
   const [screenshotPreviews, setScreenshotPreviews] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const applyLockRef = React.useRef(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [previewModalImg, setPreviewModalImg] = useState<string | null>(null);
 
   const fetchSubmittedIds = async () => {
     if (!user) return;
+    const submittedSet = new Set<string>();
+    let remoteConnected = false;
+
+    // 1. Fetch from Supabase for all known identifiers
     try {
-      const { data, error } = await supabase
-        .from('submissions')
-        .select('job_id')
-        .eq('worker_id', user.uid);
+      const idsToQuery = Array.from(new Set([user.uid, user.id].filter(Boolean)));
+      for (const uid of idsToQuery) {
+        const { data, error } = await supabase
+          .from('submissions')
+          .select('job_id')
+          .eq('worker_id', uid);
 
-      if (error && isTableMissingError(error)) {
-        const localSubs = getLocalSubmissions().filter((s) => s.worker_id === user.uid);
-        setSubmittedJobIds(new Set(localSubs.map((d) => d.job_id)));
-        return;
+        if (!error && Array.isArray(data)) {
+          remoteConnected = true;
+          data.forEach((d: any) => {
+            const jId = d.job_id || d.jobId;
+            if (jId) submittedSet.add(String(jId));
+          });
+        }
       }
-
-      if (data) {
-        setSubmittedJobIds(new Set(data.map((d: any) => d.job_id)));
-      }
-    } catch {
-      const localSubs = getLocalSubmissions().filter((s) => s.worker_id === user.uid);
-      setSubmittedJobIds(new Set(localSubs.map((d) => d.job_id)));
+    } catch (err) {
+      console.warn("Could not query remote submissions:", err);
     }
+
+    // 2. Fallback to local submissions only if remote table is unavailable
+    if (!remoteConnected) {
+      const currentWorkerIds = new Set(
+        [user.uid, user.id, profile?.id, user.email?.toLowerCase()].filter(Boolean) as string[]
+      );
+
+      const localSubs = getLocalSubmissions();
+      localSubs.forEach((s: any) => {
+        const wId = s.worker_id || s.workerId;
+        const wEmail = s.worker_email || s.workerEmail;
+        const jId = s.job_id || s.jobId;
+        if (!jId) return;
+
+        if (
+          (wId && currentWorkerIds.has(wId)) ||
+          (wEmail && user.email && wEmail.toLowerCase() === user.email.toLowerCase())
+        ) {
+          submittedSet.add(String(jId));
+        }
+      });
+    }
+
+    setSubmittedJobIds(new Set(submittedSet));
   };
 
-  const cleanJobDescription = (desc: string) => {
-    if (!desc) return '';
-    return desc
-      .replace(/\[Text Proof Required:[^\]]*\]/gi, '')
-      .replace(/\[Screenshots Required:[^\]]*\]/gi, '')
-      .trim();
+  const isJobSubmitted = (jobId: any): boolean => {
+    if (!jobId) return false;
+    const strId = String(jobId);
+    return submittedJobIds.has(strId) || submittedJobIds.has(jobId);
   };
+
 
   const mapJobItem = (d: any) => {
     let scInst = d.screenshot_instructions ?? d.screenshotInstructions ?? [];
@@ -88,6 +118,7 @@ export default function FindJobPage() {
       }
     }
     const textProofInst = d.text_proof_instruction ?? d.text_proof_requirement ?? d.textProofRequirement ?? d.textProofInstruction ?? '';
+    const imgUrl = extractJobImageUrl(d) || '';
 
     return {
       id: d.id,
@@ -105,7 +136,8 @@ export default function FindJobPage() {
       textProofRequirement: textProofInst,
       screenshot_instructions: scInst,
       screenshotInstructions: scInst,
-      imageUrl: d.image_url ?? d.imageUrl,
+      imageUrl: imgUrl,
+      image_url: imgUrl,
       description: d.description,
       ownerId: d.owner_id ?? d.employer_id ?? d.ownerId,
       createdAt: d.created_at,
@@ -133,23 +165,13 @@ export default function FindJobPage() {
         return;
       }
 
-      if (data && data.length > 0) {
+      if (data) {
         const mappedJobs = data.map(mapJobItem).filter((j: any) => {
           const occupied = Number(j.occupiedSlots) || 0;
           const total = Number(j.totalSlots) || 0;
           return occupied < total;
         });
         setJobs(mappedJobs);
-      } else {
-        const local = getLocalJobs()
-          .filter((j) => j.status === 'active')
-          .map(mapJobItem)
-          .filter((j: any) => {
-            const occupied = Number(j.occupiedSlots) || 0;
-            const total = Number(j.totalSlots) || 0;
-            return occupied < total;
-          });
-        setJobs(local);
       }
     } catch {
       const local = getLocalJobs()
@@ -239,12 +261,24 @@ export default function FindJobPage() {
       })
       .subscribe();
 
+    const handleSubmissionsUpdated = () => {
+      fetchSubmittedIds();
+      fetchActiveJobs();
+    };
+
+    window.addEventListener('submission_updated', handleSubmissionsUpdated);
+
     return () => {
       supabase.removeChannel(channel);
+      window.removeEventListener('submission_updated', handleSubmissionsUpdated);
     };
   }, [user]);
 
   const handleSelectJob = (job: any) => {
+    if (isJobSubmitted(job.id)) {
+      toast.error('আপনি ইতিমধ্যে এই জবের জন্য প্রুফ সাবমিট করেছেন! একই জব একাধিকবার সাবমিট করা যাবে না।');
+      return;
+    }
     setSelectedJob(job);
     setProofText('');
     setSubmitError('');
@@ -281,8 +315,20 @@ export default function FindJobPage() {
   const handleApply = async () => {
     if (!user || !selectedJob) return;
 
+    // Strict guard: verify user has not already submitted this job
+    if (isJobSubmitted(selectedJob.id)) {
+      setSubmitError('আপনি ইতিমধ্যে এই জবের জন্য প্রুফ সাবমিট করেছেন! একই জব একাধিকবার সাবমিট করা যাবে না।');
+      toast.error('আপনি ইতিমধ্যে এই জবের জন্য প্রুফ সাবমিট করেছেন!');
+      setSelectedJob(null);
+      return;
+    }
+
+    if (applyLockRef.current || isSubmitting || submitSuccess) return;
+    applyLockRef.current = true;
+
     if (selectedJob.requireTextProof && !proofText.trim()) {
       setSubmitError('Please provide the required text proof.');
+      applyLockRef.current = false;
       return;
     }
 
@@ -290,6 +336,7 @@ export default function FindJobPage() {
     for (let i = 0; i < reqCount; i++) {
       if (!screenshotFiles[i]) {
         setSubmitError(`Please upload Screenshot ${i + 1} before submitting.`);
+        applyLockRef.current = false;
         return;
       }
     }
@@ -311,6 +358,7 @@ export default function FindJobPage() {
             console.error("Upload error:", uploadErr);
             setSubmitError("Failed to upload image. Please try again or contact admin.");
             setIsSubmitting(false);
+            applyLockRef.current = false;
             return; // Halt the entire submission process
           }
         }
@@ -330,8 +378,16 @@ export default function FindJobPage() {
         workerDisplayId
       );
       
+      const submittedJobId = String(selectedJob.id);
+
+      // 1. Immediately register in submittedJobIds so it's impossible to submit again
+      setSubmittedJobIds(prev => new Set([...prev, submittedJobId, selectedJob.id]));
+
+      // 2. Immediately remove this job from jobs list so it vanishes from Find Jobs
+      setJobs(prevJobs => prevJobs.filter(j => String(j.id) !== submittedJobId && j.id !== selectedJob.id));
+
       setSubmitSuccess(true);
-      toast.success('Proof submitted successfully!');
+      toast.success('কাজের প্রমাণ সফলভাবে জমা হয়েছে! জবটি ফাইন্ড জব অপশন থেকে সম্পূর্ণ সরিয়ে নেওয়া হয়েছে।');
 
       setTimeout(() => {
         setSubmitSuccess(false);
@@ -341,10 +397,14 @@ export default function FindJobPage() {
         setSelectedJob(null);
         fetchSubmittedIds();
         fetchActiveJobs();
-      }, 1500);
+        applyLockRef.current = false;
+      }, 1200);
     } catch (error: any) {
       console.error("Error submitting proof:", error);
-      setSubmitError(error.message || 'Failed to submit proof. Please try again.');
+      const errMsg = error.message || 'Failed to submit proof. Please try again.';
+      setSubmitError(errMsg);
+      toast.error(errMsg);
+      applyLockRef.current = false;
     } finally {
       setIsSubmitting(false);
     }
@@ -360,12 +420,17 @@ export default function FindJobPage() {
   };
 
   // Filter out jobs already submitted and apply category filter
-  const availableJobs = jobs.filter(job => !submittedJobIds.has(job.id));
-  const displayedJobs = selectedCategory === 'ALL' 
-    ? availableJobs 
-    : availableJobs.filter(job => job.category?.toLowerCase() === selectedCategory.toLowerCase());
+  const availableJobs = jobs.filter(job => !isJobSubmitted(job.id));
 
-  const categories = ['ALL', ...Array.from(new Set(availableJobs.map(j => j.category).filter(Boolean)))];
+  // Only include categories that actually have active jobs available
+  const activeCategoriesInJobs = Array.from(
+    new Set(availableJobs.map(j => (j.category || '').trim()).filter(Boolean))
+  );
+  const categories = ['ALL', ...activeCategoriesInJobs];
+
+  const displayedJobs = (selectedCategory === 'ALL' || !activeCategoriesInJobs.includes(selectedCategory))
+    ? availableJobs 
+    : availableJobs.filter(job => (job.category || '').trim().toLowerCase() === selectedCategory.toLowerCase());
 
   // -------------------------------------------------------------
   // FULL-SCREEN / EXPANDED JOB DETAILS & PROOF SUBMISSION VIEW
@@ -476,25 +541,38 @@ export default function FindJobPage() {
               Job Instructions & Rules
             </h2>
 
-            {/* Job Sample Image / Banner if uploaded by employer */}
-            {selectedJob.imageUrl && (
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#080412]/80 border border-slate-200 dark:border-purple-500/30 space-y-2">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-amber-400 flex items-center gap-1.5">
-                  <ImageIcon className="w-4 h-4 text-purple-600 dark:text-amber-400" />
-                  Employer Reference Image / Sample:
-                </p>
-                <div className="relative inline-block group cursor-pointer" onClick={() => setPreviewModalImg(selectedJob.imageUrl)}>
-                  <img 
-                    src={selectedJob.imageUrl} 
-                    alt="Job Reference" 
-                    className="max-h-60 max-w-full rounded-xl border border-slate-200 dark:border-purple-500/30 object-contain shadow-sm" 
-                  />
-                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity rounded-xl flex items-center justify-center text-white text-xs font-bold gap-1">
-                    <Eye className="w-4 h-4" /> Click to view full image
+            {/* Job Sample Image / Banner Thumbnail - Only shown if uploaded by employer */}
+            {(() => {
+              const displayImg = selectedJob.imageUrl || selectedJob.image_url || extractJobImageUrl(selectedJob);
+              if (!displayImg) return null;
+              return (
+                <div className="p-4 sm:p-5 rounded-2xl bg-slate-50 dark:bg-[#080412]/90 border border-purple-200 dark:border-purple-500/30 space-y-3 shadow-xs">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-bold uppercase tracking-wider text-purple-700 dark:text-amber-400 flex items-center gap-1.5">
+                      <ImageIcon className="w-4 h-4 text-purple-600 dark:text-amber-400" />
+                      জবের থাম্বনেইল / রেফারেন্স ছবি (Job Thumbnail):
+                    </p>
+                    <span className="text-[11px] font-bold text-slate-500 dark:text-purple-300/70">
+                      (বড় করে দেখতে ছবিতে ক্লিক করুন)
+                    </span>
+                  </div>
+                  <div 
+                    className="relative group cursor-pointer overflow-hidden rounded-xl border border-slate-200 dark:border-purple-500/40 bg-slate-100 dark:bg-[#130b2c] flex items-center justify-center max-w-lg shadow-sm"
+                    onClick={() => setPreviewModalImg(displayImg)}
+                  >
+                    <img 
+                      src={displayImg} 
+                      alt="Job Thumbnail Reference" 
+                      className="max-h-80 w-full object-contain group-hover:scale-[1.02] transition-transform duration-200 rounded-lg" 
+                    />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-bold gap-1.5 backdrop-blur-[2px] rounded-lg">
+                      <Eye className="w-4 h-4 text-amber-300" /> 
+                      <span>Click to View Full Screen / বড় করে দেখুন</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Description Text Box - Wide & Spacious (Clean of any injected proof requirements) */}
             <div className="p-5 rounded-2xl bg-slate-50 dark:bg-[#080412]/90 border border-slate-200 dark:border-purple-500/30 text-slate-800 dark:text-purple-100 text-sm leading-relaxed whitespace-pre-wrap font-mono">
@@ -521,7 +599,7 @@ export default function FindJobPage() {
             </div>
           </div>
 
-          {/* Proof Submission Form Card or Own Job Notice */}
+          {/* Proof Submission Form Card or Own Job Notice or Already Submitted Notice */}
           {isOwnJob ? (
             <div className="bg-white dark:bg-[#130b2c]/85 dark:backdrop-blur-xl border border-amber-200 dark:border-amber-400/30 rounded-3xl p-6 sm:p-8 shadow-sm dark:shadow-2xl text-center space-y-3">
               <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-500/40 text-amber-600 dark:text-amber-400 mx-auto">
@@ -531,6 +609,33 @@ export default function FindJobPage() {
               <p className="text-sm text-slate-600 dark:text-purple-200/80 font-semibold max-w-md mx-auto">
                 You created this micro-job. You cannot submit proof or complete tasks on your own job.
               </p>
+            </div>
+          ) : isJobSubmitted(job.id) ? (
+            <div className="bg-white dark:bg-[#130b2c]/85 dark:backdrop-blur-xl border border-emerald-300 dark:border-emerald-500/40 rounded-3xl p-6 sm:p-8 shadow-sm dark:shadow-2xl text-center space-y-4">
+              <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-500/40 text-emerald-600 dark:text-emerald-400 mx-auto">
+                <CheckCircle2 className="w-8 h-8" />
+              </div>
+              <h3 className="text-xl font-black text-slate-900 dark:text-white">
+                আপনি এই জবটি ইতিমধ্যে সাবমিট করেছেন
+              </h3>
+              <p className="text-sm text-slate-600 dark:text-purple-200/80 font-medium max-w-md mx-auto">
+                এই জবের কাজের প্রমাণপত্র আপনি আগেই সফলভাবে জমা দিয়েছেন। একই কাজ একাধিকবার জমা দেওয়া সম্পূর্ণ নিষিদ্ধ। আপনার জমা দেওয়া কাজের স্ট্যাটাস দেখতে My Submissions পেজ চেক করুন।
+              </p>
+              <div className="pt-2 flex flex-wrap justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setSelectedJob(null)}
+                  className="px-5 py-2.5 rounded-xl font-bold text-xs bg-slate-100 hover:bg-slate-200 dark:bg-white/10 dark:hover:bg-white/15 text-slate-800 dark:text-white transition-all cursor-pointer"
+                >
+                  অন্যান্য জবে ফিরে যান
+                </button>
+                <Link
+                  to="/submissions"
+                  className="px-5 py-2.5 rounded-xl font-bold text-xs bg-purple-600 hover:bg-purple-700 dark:bg-amber-400 dark:hover:bg-amber-300 dark:text-slate-950 text-white transition-all shadow-md cursor-pointer inline-flex items-center gap-1.5"
+                >
+                  <span>My Submissions দেখুন</span>
+                </Link>
+              </div>
             </div>
           ) : (
             <div className="bg-white dark:bg-[#130b2c]/85 dark:backdrop-blur-xl border border-slate-200 dark:border-purple-500/20 rounded-3xl p-6 sm:p-8 shadow-sm dark:shadow-2xl dark:shadow-purple-950/50 space-y-6">
@@ -707,8 +812,8 @@ export default function FindJobPage() {
 
                 <button
                   onClick={handleApply}
-                  disabled={isSubmitting || submitSuccess}
-                  className="w-full sm:w-auto px-8 py-3.5 rounded-xl font-bold text-sm text-white bg-purple-600 hover:bg-purple-700 dark:bg-gradient-to-r dark:from-amber-400 dark:to-yellow-500 dark:hover:from-amber-300 dark:hover:to-yellow-400 dark:text-slate-950 shadow-md shadow-purple-600/20 dark:shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:scale-[1.01] active:scale-98 flex items-center justify-center gap-2"
+                  disabled={isSubmitting || submitSuccess || applyLockRef.current}
+                  className="w-full sm:w-auto px-8 py-3.5 rounded-xl font-bold text-sm text-white bg-purple-600 hover:bg-purple-700 dark:bg-gradient-to-r dark:from-amber-400 dark:to-yellow-500 dark:hover:from-amber-300 dark:hover:to-yellow-400 dark:text-slate-950 shadow-md shadow-purple-600/20 dark:shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none transition-all hover:scale-[1.01] active:scale-98 flex items-center justify-center gap-2"
                 >
                   {isSubmitting ? (
                     <>
@@ -928,14 +1033,14 @@ export default function FindJobPage() {
                   </div>
                 </div>
 
-                {/* Card Middle: Title & Description */}
-                <div>
+                {/* Card Middle: Title & Description (No thumbnail in feed, only in details) */}
+                <div className="space-y-1">
                   <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white group-hover:text-purple-600 dark:group-hover:text-amber-300 transition-colors line-clamp-1">
                     {job.title}
                   </h3>
                   {job.description && (
-                    <p className="text-slate-500 dark:text-purple-300/70 text-xs mt-1 line-clamp-2 font-medium">
-                      {job.description}
+                    <p className="text-slate-500 dark:text-purple-300/70 text-xs line-clamp-2 font-medium">
+                      {cleanJobDescription(job.description)}
                     </p>
                   )}
                 </div>

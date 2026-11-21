@@ -2,6 +2,14 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User } from '@supabase/supabase-js';
 import { supabase, formatUserDisplayId } from '../lib/supabaseClient';
 import { checkIsAdmin } from '../lib/adminConfig';
+import { 
+  saveLocalUser, 
+  getLocalUser, 
+  isUserBlocked, 
+  isUserDeleted,
+  deleteLocalUser,
+  syncDeletedUsersWithRemote
+} from '../lib/localFallbackStore';
 
 export interface UserProfile {
   id: string;
@@ -13,6 +21,9 @@ export interface UserProfile {
   depositBalance: number;
   earningBalance: number;
   role: string;
+  status?: string;
+  is_pending?: boolean;
+  ip_address?: string;
   isLocked?: boolean;
   createdAt?: string;
 }
@@ -26,6 +37,9 @@ export interface AppUser extends User {
   depositBalance?: number;
   earningBalance?: number;
   role?: string;
+  status?: string;
+  is_pending?: boolean;
+  ip_address?: string;
   isLocked?: boolean;
 }
 
@@ -37,6 +51,7 @@ interface AuthContextType {
   signOut: () => Promise<void>;
   logout: () => Promise<void>;
   updateBalances: (depositChange: number, earningChange: number) => void;
+  setDirectBalances: (balances: { depositBalance?: number; earningBalance?: number }) => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -47,6 +62,7 @@ const AuthContext = createContext<AuthContextType>({
   signOut: async () => {},
   logout: async () => {},
   updateBalances: () => {},
+  setDirectBalances: () => {},
 });
 
 const AUTH_SESSION_KEY = 'iz_auth_session';
@@ -72,6 +88,33 @@ export const getValidStoredSession = (): { user: AppUser; profile: UserProfile }
     if (now - lastActivity > SESSION_TIMEOUT_MS) {
       localStorage.removeItem(AUTH_SESSION_KEY);
       return null;
+    }
+
+    // If account was deleted or blocked by Admin, invalidate stored session (never lock out primary admin)
+    if (parsed.user?.id || parsed.profile?.id || parsed.user?.email) {
+      const uId = parsed.user?.id || parsed.profile?.id || '';
+      const uEmail = parsed.user?.email || parsed.profile?.email || '';
+      const isAdminSess = checkIsAdmin({ email: uEmail, username: parsed.profile?.username || parsed.user?.username });
+      if (isAdminSess) {
+        if (parsed.profile) {
+          parsed.profile.role = 'admin';
+          parsed.profile.isLocked = false;
+        }
+        if (parsed.user) {
+          parsed.user.role = 'admin';
+          parsed.user.isLocked = false;
+        }
+      } else {
+        if (isUserDeleted(uId) || isUserDeleted(uEmail)) {
+          localStorage.removeItem(AUTH_SESSION_KEY);
+          return null;
+        }
+        if (isUserBlocked(uId) || isUserBlocked(uEmail) || parsed.profile?.isLocked || parsed.user?.isLocked) {
+          // Keep profile as locked
+          if (parsed.profile) parsed.profile.isLocked = true;
+          if (parsed.user) parsed.user.isLocked = true;
+        }
+      }
     }
 
     // Touch last activity timestamp
@@ -142,7 +185,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       let userRow: any = null;
 
-      // 1. Try to fetch from users table
+      // 1. Sync remote deleted accounts archive from Supabase settings table first
+      try {
+        await syncDeletedUsersWithRemote();
+      } catch {}
+
+      // 1.2 Check if user account was deleted by Admin BEFORE querying or upserting
+      if (!isAutoAdmin && (isUserDeleted(authUserId) || (email && isUserDeleted(email)))) {
+        clearStoredSession();
+        setUser(null);
+        setProfile(null);
+        try {
+          await supabase.auth.signOut();
+        } catch {}
+        return;
+      }
+
+      // 1.4 Try to fetch from users table
       try {
         const { data, error } = await supabase
           .from('users')
@@ -157,8 +216,62 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.warn('Initial profile select warning:', e);
       }
 
-      // 2. If row not found in users table, attempt auto-upsert
+      // 1.6 If DB userRow indicates user was marked deleted by Admin, lock them out permanently (unless primary admin)!
+      if (!isAutoAdmin && userRow && (userRow.status === 'deleted' || userRow.role === 'deleted')) {
+        deleteLocalUser(authUserId, 'Account marked as deleted by Administrator', userRow);
+        clearStoredSession();
+        setUser(null);
+        setProfile(null);
+        try {
+          await supabase.auth.signOut();
+        } catch {}
+        return;
+      }
+
+      // 1.8 Check if user account was deleted by Admin BEFORE doing any DB upserts
+      if (!isAutoAdmin && (isUserDeleted(authUserId) || (email && isUserDeleted(email)))) {
+        clearStoredSession();
+        setUser(null);
+        setProfile(null);
+        try {
+          await supabase.auth.signOut();
+        } catch {}
+        return;
+      }
+
+      // Check if user is known to be pending or blocked locally or in fallback store
+      const localUserData = getLocalUser(authUserId);
+      const isKnownPending = Boolean(
+        localUserData &&
+        localUserData.status !== 'active' &&
+        (localUserData.status === 'pending' || localUserData.is_pending)
+      );
+      const isKnownBlocked = !isKnownPending && Boolean(
+        localUserData?.is_locked ||
+        localUserData?.role === 'blocked' ||
+        localUserData?.status === 'blocked' ||
+        isUserBlocked(authUserId) ||
+        (email && isUserBlocked(email))
+      );
+
+      // 2. If row not found in users table, attempt auto-upsert ONLY if NOT in deleted archive!
       if (!userRow) {
+        // If user is deleted, DO NOT resurrect or auto-upsert!
+        if (!isAutoAdmin && (isUserDeleted(authUserId) || (email && isUserDeleted(email)))) {
+          clearStoredSession();
+          setUser(null);
+          setProfile(null);
+          try {
+            await supabase.auth.signOut();
+          } catch {}
+          return;
+        }
+
+        const metaPending = !isAutoAdmin && Boolean(
+          isKnownPending ||
+          authUser.user_metadata?.is_pending ||
+          authUser.user_metadata?.status === 'pending'
+        );
         try {
           const newUserData = {
             id: authUserId,
@@ -167,8 +280,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             username: fallbackUsername,
             deposit_balance: 0,
             earning_balance: 0,
-            role: defaultRole,
-            is_locked: false,
+            role: isAutoAdmin ? 'admin' : (metaPending ? 'user' : (isKnownBlocked ? 'blocked' : defaultRole)),
+            is_locked: isAutoAdmin ? false : isKnownBlocked,
+            status: isAutoAdmin ? 'active' : (metaPending ? 'pending' : (isKnownBlocked ? 'blocked' : 'active')),
+            is_pending: isAutoAdmin ? false : metaPending,
           };
 
           const { data: inserted, error: insertError } = await supabase
@@ -190,13 +305,69 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             username: fallbackUsername,
             deposit_balance: 0,
             earning_balance: 0,
-            role: defaultRole,
-            is_locked: false,
+            role: isAutoAdmin ? 'admin' : (metaPending ? 'user' : (isKnownBlocked ? 'blocked' : defaultRole)),
+            is_locked: isAutoAdmin ? false : isKnownBlocked,
+            status: isAutoAdmin ? 'active' : (metaPending ? 'pending' : (isKnownBlocked ? 'blocked' : 'active')),
+            is_pending: isAutoAdmin ? false : metaPending,
           };
         }
+      } else if (isAutoAdmin && (userRow.role !== 'admin' || userRow.is_locked || userRow.is_pending || userRow.status !== 'active')) {
+        // Ensure primary admin row in DB is always promoted to active admin
+        try {
+          await supabase
+            .from('users')
+            .update({
+              role: 'admin',
+              status: 'active',
+              is_pending: false,
+              is_locked: false,
+              pending_reason: null,
+            })
+            .eq('id', authUserId);
+          userRow = { ...userRow, role: 'admin', status: 'active', is_pending: false, is_locked: false, pending_reason: null };
+        } catch {}
       }
 
+      // Check again if user is archived in deleted list
+      if (!isAutoAdmin && (isUserDeleted(authUserId) || (userRow?.email && isUserDeleted(userRow.email)) || userRow?.status === 'deleted' || userRow?.role === 'deleted')) {
+        clearStoredSession();
+        setUser(null);
+        setProfile(null);
+        try {
+          await supabase.auth.signOut();
+        } catch {}
+        return;
+      }
+
+      // Separate pending status from blocked status (never restrict primary admin)
+      const isPendingUser = isAutoAdmin ? false : Boolean(
+        userRow.status === 'pending' ||
+        userRow.is_pending ||
+        (userRow.status !== 'active' && (localUserData?.status === 'pending' || localUserData?.is_pending))
+      );
+
+      const isLockedUser = (isAutoAdmin || isPendingUser) ? false : Boolean(
+        userRow.is_locked || 
+        userRow.isLocked || 
+        userRow.status === 'blocked' ||
+        userRow.role === 'blocked' ||
+        (userRow.status !== 'active' && (
+          localUserData?.is_locked ||
+          localUserData?.role === 'blocked' ||
+          localUserData?.status === 'blocked' ||
+          isUserBlocked(authUserId) ||
+          (userRow.email && isUserBlocked(userRow.email))
+        ))
+      );
+
       const finalRole = (isAutoAdmin || userRow.role === 'admin') ? 'admin' : (userRow.role || defaultRole);
+      const resolvedStatus = isAutoAdmin
+        ? 'active'
+        : isPendingUser
+          ? 'pending'
+          : isLockedUser
+            ? 'blocked'
+            : (userRow.status || 'active');
 
       // 3. Map profile state cleanly
       const displayIdVal = formatUserDisplayId(userRow.display_id ?? userRow.displayId, authUserId);
@@ -209,8 +380,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         username: userRow.username || fallbackUsername,
         depositBalance: Number(userRow.deposit_balance ?? userRow.depositBalance ?? 0),
         earningBalance: Number(userRow.earning_balance ?? userRow.earningBalance ?? 0),
-        role: finalRole,
-        isLocked: Boolean(userRow.is_locked || userRow.isLocked),
+        role: isPendingUser ? 'pending' : (isLockedUser ? 'blocked' : finalRole),
+        status: resolvedStatus,
+        is_pending: isPendingUser,
+        ip_address: userRow.ip_address || localUserData?.ip_address || '',
+        isLocked: isLockedUser,
         createdAt: userRow.created_at || userRow.createdAt || new Date().toISOString(),
       };
       
@@ -224,7 +398,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         depositBalance: mappedProfile.depositBalance,
         earningBalance: mappedProfile.earningBalance,
         role: mappedProfile.role,
-        isLocked: mappedProfile.isLocked,
+        status: resolvedStatus,
+        is_pending: isPendingUser,
+        ip_address: mappedProfile.ip_address,
+        isLocked: isLockedUser,
       };
 
       setProfile(mappedProfile);
@@ -235,8 +412,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.error('Failed to resolve user profile:', err);
       // Fallback to basic session user to prevent app lockouts
       const email = authUser.email || '';
+      if (isUserDeleted(authUser.id) || (email && isUserDeleted(email))) {
+        clearStoredSession();
+        setUser(null);
+        setProfile(null);
+        return;
+      }
+      const localUserData = getLocalUser(authUser.id);
+      const isPendingUser = Boolean(
+        localUserData && localUserData.status !== 'active' && (localUserData.status === 'pending' || localUserData.is_pending)
+      );
+      const isLockedUser = !isPendingUser && Boolean(
+        localUserData?.is_locked ||
+        localUserData?.role === 'blocked' ||
+        localUserData?.status === 'blocked' ||
+        isUserBlocked(authUser.id) ||
+        (email && isUserBlocked(email))
+      );
       const fallbackUser = authUser.user_metadata?.username || email.split('@')[0] || 'user';
-      const fallbackRole = checkIsAdmin({ email, username: fallbackUser, user_metadata: authUser.user_metadata }) ? 'admin' : 'user';
+      const fallbackRole = checkIsAdmin({ email, username: fallbackUser, user_metadata: authUser.user_metadata })
+        ? 'admin'
+        : isPendingUser
+          ? 'pending'
+          : isLockedUser
+            ? 'blocked'
+            : 'user';
+      const fallbackStatus = fallbackRole === 'admin' ? 'active' : isPendingUser ? 'pending' : isLockedUser ? 'blocked' : 'active';
       const fallbackProfile: UserProfile = {
         id: authUser.id,
         email,
@@ -245,7 +446,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         depositBalance: 0,
         earningBalance: 0,
         role: fallbackRole,
-        isLocked: false,
+        status: fallbackStatus,
+        is_pending: isPendingUser,
+        ip_address: localUserData?.ip_address || '',
+        isLocked: isLockedUser,
       };
       const fallbackAppUser: AppUser = {
         ...authUser,
@@ -255,7 +459,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         depositBalance: 0,
         earningBalance: 0,
         role: fallbackRole,
-        isLocked: false,
+        status: fallbackStatus,
+        is_pending: isPendingUser,
+        ip_address: fallbackProfile.ip_address,
+        isLocked: isLockedUser,
       };
       setUser(fallbackAppUser);
       setProfile(fallbackProfile);
@@ -265,48 +472,130 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const updateBalances = (depositChange: number, earningChange: number) => {
     if (!user) return;
-    setProfile((prev) => {
-      if (!prev) return prev;
-      const newDeposit = Math.max(0, prev.depositBalance + depositChange);
-      const newEarning = Math.max(0, prev.earningBalance + earningChange);
-      const updatedProfile = {
-        ...prev,
-        depositBalance: newDeposit,
-        earningBalance: newEarning,
-      };
 
-      // Keep stored session in sync with latest balances
-      if (user) {
-        const updatedUser = {
-          ...user,
+    // Security Guard: Prevent any client-side fake or test balance injection
+    // Balance increases MUST only be credited via official Admin approval (deposits, tasks)
+    if (depositChange > 0 || earningChange > 0) {
+      console.warn("Unauthorized client-side balance addition blocked.");
+      return;
+    }
+
+    const currentDeposit = Number(profile?.depositBalance ?? user?.depositBalance ?? 0);
+    const currentEarning = Number(profile?.earningBalance ?? user?.earningBalance ?? 0);
+    const newDeposit = Math.max(0, Number((currentDeposit + depositChange).toFixed(2)));
+    const newEarning = Math.max(0, Number((currentEarning + earningChange).toFixed(2)));
+
+    const updatedProfile: UserProfile = {
+      ...(profile || {
+        id: user.uid,
+        email: user.email || '',
+        name: user.name || 'User',
+        username: user.username || 'user',
+        role: user.role || 'user',
+        isLocked: false,
+        createdAt: new Date().toISOString(),
+      }),
+      depositBalance: newDeposit,
+      earningBalance: newEarning,
+    };
+
+    const updatedUser: AppUser = {
+      ...user,
+      depositBalance: newDeposit,
+      earningBalance: newEarning,
+    };
+
+    setProfile(updatedProfile);
+    setUser(updatedUser);
+    saveStoredSession(updatedUser, updatedProfile);
+    saveLocalUser(user.uid, { deposit_balance: newDeposit, earning_balance: newEarning });
+
+    (async () => {
+      try {
+        await supabase
+          .from('users')
+          .update({
+            deposit_balance: newDeposit,
+            earning_balance: newEarning,
+          })
+          .eq('id', user.uid);
+      } catch (err) {
+        console.warn('Balance background update notice:', err);
+      }
+    })();
+
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('iz_balance_updated', {
+        detail: {
+          source: 'auth_context',
+          userId: user.uid,
           depositBalance: newDeposit,
           earningBalance: newEarning,
-        };
-        setUser(updatedUser);
-        saveStoredSession(updatedUser, updatedProfile);
-      }
-      
-      // Update Supabase in background
-      (async () => {
-        try {
-          const { error } = await supabase
-            .from('users')
-            .update({
-              deposit_balance: newDeposit,
-              earning_balance: newEarning,
-            })
-            .eq('id', user.uid);
-            
-          if (error) {
-            console.error('Supabase balance update error:', error.message);
-          }
-        } catch (err) {
-          console.warn('Balance background update notice:', err);
         }
-      })();
+      }));
+    }, 0);
+  };
 
-      return updatedProfile;
-    });
+  const setDirectBalances = (balances: { depositBalance?: number; earningBalance?: number }) => {
+    if (!user) return;
+    const currentDeposit = Number(profile?.depositBalance ?? user?.depositBalance ?? 0);
+    const currentEarning = Number(profile?.earningBalance ?? user?.earningBalance ?? 0);
+    const newDeposit = balances.depositBalance !== undefined
+      ? Math.max(0, Number(balances.depositBalance.toFixed(2)))
+      : currentDeposit;
+    const newEarning = balances.earningBalance !== undefined
+      ? Math.max(0, Number(balances.earningBalance.toFixed(2)))
+      : currentEarning;
+
+    const updatedProfile: UserProfile = {
+      ...(profile || {
+        id: user.uid,
+        email: user.email || '',
+        name: user.name || 'User',
+        username: user.username || 'user',
+        role: user.role || 'user',
+        isLocked: false,
+        createdAt: new Date().toISOString(),
+      }),
+      depositBalance: newDeposit,
+      earningBalance: newEarning,
+    };
+
+    const updatedUser: AppUser = {
+      ...user,
+      depositBalance: newDeposit,
+      earningBalance: newEarning,
+    };
+
+    setProfile(updatedProfile);
+    setUser(updatedUser);
+    saveStoredSession(updatedUser, updatedProfile);
+    saveLocalUser(user.uid, { deposit_balance: newDeposit, earning_balance: newEarning });
+
+    (async () => {
+      try {
+        await supabase
+          .from('users')
+          .update({
+            deposit_balance: newDeposit,
+            earning_balance: newEarning,
+          })
+          .eq('id', user.uid);
+      } catch (err) {
+        console.warn('Direct balance update notice:', err);
+      }
+    })();
+
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('iz_balance_updated', {
+        detail: {
+          source: 'auth_context',
+          userId: user.uid,
+          depositBalance: newDeposit,
+          earningBalance: newEarning,
+        }
+      }));
+    }, 0);
   };
 
   const refreshProfile = async () => {
@@ -414,12 +703,62 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }, 30000);
 
+    // 5. Cross-component balance synchronization listener
+    const handleBalanceEvent = (e: any) => {
+      if (!mounted) return;
+      const detail = e.detail;
+      // Skip events dispatched by auth_context itself to avoid loop
+      if (detail && detail.source !== 'auth_context') {
+        // If event specifies target userId, only apply to current user if matching
+        if (detail.userId && user && detail.userId !== user.uid) {
+          return;
+        }
+
+        const nextDeposit = typeof detail.depositBalance === 'number' ? detail.depositBalance : undefined;
+        const nextEarning = typeof detail.earningBalance === 'number' ? detail.earningBalance : undefined;
+
+        if (nextDeposit !== undefined || nextEarning !== undefined) {
+          setProfile((prev) => {
+            if (!prev) return prev;
+            const updatedDep = nextDeposit !== undefined ? nextDeposit : prev.depositBalance;
+            const updatedEarn = nextEarning !== undefined ? nextEarning : prev.earningBalance;
+            if (prev.depositBalance === updatedDep && prev.earningBalance === updatedEarn) {
+              return prev;
+            }
+            const updated = {
+              ...prev,
+              depositBalance: updatedDep,
+              earningBalance: updatedEarn,
+            };
+            if (user) {
+              saveStoredSession({ ...user, depositBalance: updatedDep, earningBalance: updatedEarn }, updated);
+              saveLocalUser(user.uid, { deposit_balance: updatedDep, earning_balance: updatedEarn });
+            }
+            return updated;
+          });
+
+          setUser((prev) => {
+            if (!prev) return prev;
+            const updatedDep = nextDeposit !== undefined ? nextDeposit : (prev.depositBalance ?? 0);
+            const updatedEarn = nextEarning !== undefined ? nextEarning : (prev.earningBalance ?? 0);
+            return {
+              ...prev,
+              depositBalance: updatedDep,
+              earningBalance: updatedEarn,
+            };
+          });
+        }
+      }
+    };
+    window.addEventListener('iz_balance_updated', handleBalanceEvent);
+
     return () => {
       mounted = false;
       subscription.unsubscribe();
       window.removeEventListener('mousedown', handleUserActivity);
       window.removeEventListener('keydown', handleUserActivity);
       window.removeEventListener('touchstart', handleUserActivity);
+      window.removeEventListener('iz_balance_updated', handleBalanceEvent);
       clearInterval(inactivityInterval);
     };
   }, []);
@@ -434,6 +773,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         signOut,
         logout: signOut,
         updateBalances,
+        setDirectBalances,
       }}
     >
       {children}

@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { supabase, formatJobDisplayId } from '../../lib/supabaseClient';
+import { supabase, formatJobDisplayId, formatUserDisplayId, formatDateTime } from '../../lib/supabaseClient';
 import { approveSubmission, rejectSubmission } from '../../lib/jobService';
-import { CheckCircle, XCircle, AlertCircle, ExternalLink, ImageIcon, X, ImageOff } from 'lucide-react';
+import { CheckCircle, XCircle, AlertCircle, ExternalLink, ImageIcon, X, ImageOff, Clock, Check, Filter } from 'lucide-react';
 import toast from 'react-hot-toast';
+import RejectionReasonModal from '../../components/RejectionReasonModal';
 import {
   getLocalSubmissions,
   getLocalJobs,
@@ -36,6 +37,9 @@ export default function AdminSubmissionsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending');
+  const [rejectingSub, setRejectingSub] = useState<any | null>(null);
+  const actionLockRef = React.useRef<Set<string>>(new Set());
 
   // Modal State for Interactive Screenshot Previews
   const [selectedScreenshots, setSelectedScreenshots] = useState<string[]>([]);
@@ -63,27 +67,39 @@ export default function AdminSubmissionsPage() {
 
   useEffect(() => {
     fetchSubmissions();
+
+    const channel = supabase
+      .channel('admin-submissions-channel')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'submissions' }, () => {
+        fetchSubmissions();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const fetchSubmissions = async () => {
     setLoading(true);
     setError('');
     try {
-      // Step 1: Fetch the submissions
+      // Step 1: Fetch the submissions from Supabase
       const { data: subsData, error: subsErr } = await supabase
         .from('submissions')
         .select('*')
         .order('created_at', { ascending: false });
 
-      let rawSubs = subsData || [];
-
-      if (subsErr && isTableMissingError(subsErr)) {
+      let rawSubs: any[] = [];
+      if (!subsErr && Array.isArray(subsData)) {
+        rawSubs = [...subsData];
+        try {
+          localStorage.setItem('iz_fallback_submissions', JSON.stringify(rawSubs));
+        } catch {}
+      } else if (subsErr && isTableMissingError(subsErr)) {
         rawSubs = getLocalSubmissions();
-      } else if (!subsData || subsData.length === 0) {
-        const localSubs = getLocalSubmissions();
-        if (localSubs.length > 0) {
-          rawSubs = localSubs;
-        }
+      } else {
+        rawSubs = getLocalSubmissions();
       }
 
       // Step 2: Extract unique Job IDs and Worker IDs
@@ -93,20 +109,16 @@ export default function AdminSubmissionsPage() {
       // Step 3: Fetch the related details from 'jobs' and 'users' tables
       let jobs: any[] = [];
       if (jobIds.length > 0) {
-        const { data: jobsData } = await supabase
+        const { data: jobsData, error: jobsErr } = await supabase
           .from('jobs')
           .select('*')
           .in('id', jobIds);
-        jobs = jobsData || [];
-      }
-
-      // Merge local jobs as fallback
-      const localJobs = getLocalJobs();
-      localJobs.forEach((lj) => {
-        if (!jobs.some((j) => j.id === lj.id)) {
-          jobs.push(lj);
+        if (!jobsErr && jobsData) {
+          jobs = jobsData;
+        } else {
+          jobs = getLocalJobs();
         }
-      });
+      }
 
       let workers: any[] = [];
       if (workerIds.length > 0) {
@@ -226,41 +238,56 @@ export default function AdminSubmissionsPage() {
   };
 
   const handleApprove = async (submission: any) => {
-    // ১. ডাবল পেমেন্ট বন্ধ করার সিকিউরিটি চেক
-    if (submission.status !== 'pending') {
-      toast.error("এই কাজটি ইতোমধ্যে রিভিউ করা হয়ে গেছে!");
+    // ১. ডাবল পেমেন্ট ও ডাবল ক্লিক বন্ধ করার সিকিউরিটি চেক
+    if (actionLockRef.current.has(submission.id) || submission.status !== 'pending') {
       return;
     }
+    actionLockRef.current.add(submission.id);
     setActionLoading(submission.id);
     try {
       await approveSubmission(submission.id, submission.jobId || submission.job_id, submission.workerId || submission.worker_id);
       setSubmissions(prev => prev.map(s => s.id === submission.id ? { ...s, status: 'approved', reviewed_at: new Date().toISOString() } : s));
       toast.success("কাজটি অ্যাপ্রুভ করা হয়েছে!");
+      await fetchSubmissions();
     } catch (err: any) {
       console.error(err);
-      toast.error('Failed to approve submission: ' + (err.message || 'Unknown error'));
+      toast.error(err?.message || 'অ্যাপ্রুভ করতে সমস্যা হয়েছে।');
+      actionLockRef.current.delete(submission.id);
+      await fetchSubmissions();
     } finally {
       setActionLoading(null);
     }
   };
 
-  const handleReject = async (submission: any) => {
-    if (submission.status !== 'pending') {
-      toast.error("এই কাজটি ইতোমধ্যে রিভিউ করা হয়ে গেছে!");
-      return;
-    }
+  const handleConfirmReject = async (reason: string) => {
+    if (!rejectingSub) return;
+    const submission = rejectingSub;
+    if (actionLockRef.current.has(submission.id)) return;
+    actionLockRef.current.add(submission.id);
     setActionLoading(submission.id);
     try {
-      await rejectSubmission(submission.id, submission.jobId || submission.job_id);
-      setSubmissions(prev => prev.map(s => s.id === submission.id ? { ...s, status: 'rejected', reviewed_at: new Date().toISOString() } : s));
+      await rejectSubmission(submission.id, submission.jobId || submission.job_id, reason);
+      setSubmissions(prev => prev.map(s => s.id === submission.id ? { ...s, status: 'rejected', rejection_reason: reason, reviewed_at: new Date().toISOString() } : s));
+      setRejectingSub(null);
       toast.success("কাজটি রিজেক্ট করা হয়েছে!");
+      await fetchSubmissions();
     } catch (err: any) {
       console.error(err);
-      toast.error('Failed to reject submission: ' + (err.message || 'Unknown error'));
+      toast.error(err?.message || 'রিজেক্ট করতে সমস্যা হয়েছে।');
+      actionLockRef.current.delete(submission.id);
+      await fetchSubmissions();
     } finally {
       setActionLoading(null);
     }
   };
+
+  const pendingCount = submissions.filter(s => s.status === 'pending').length;
+  const approvedCount = submissions.filter(s => s.status === 'approved').length;
+  const rejectedCount = submissions.filter(s => s.status === 'rejected').length;
+
+  const displayedSubmissions = activeTab === 'all' 
+    ? submissions 
+    : submissions.filter(s => s.status === activeTab);
 
   if (loading) {
     return (
@@ -272,6 +299,7 @@ export default function AdminSubmissionsPage() {
 
   return (
     <div className="p-6 sm:p-8 max-w-7xl mx-auto space-y-6">
+      {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">Mission Submissions</h1>
@@ -284,6 +312,59 @@ export default function AdminSubmissionsPage() {
         </div>
       </div>
 
+      {/* Tabs Filter Bar */}
+      <div className="bg-white dark:bg-[#130b2c] border border-slate-200 dark:border-purple-500/25 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4 shadow-sm">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => setActiveTab('pending')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeTab === 'pending'
+                ? 'bg-purple-600 dark:bg-amber-400 text-white dark:text-slate-950 shadow-md'
+                : 'bg-slate-50 dark:bg-[#180d38] text-slate-600 dark:text-purple-300 hover:text-slate-900 border border-slate-200 dark:border-purple-500/20'
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5" />
+            <span>Pending ({pendingCount})</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('approved')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeTab === 'approved'
+                ? 'bg-purple-600 dark:bg-amber-400 text-white dark:text-slate-950 shadow-md'
+                : 'bg-slate-50 dark:bg-[#180d38] text-slate-600 dark:text-purple-300 hover:text-slate-900 border border-slate-200 dark:border-purple-500/20'
+            }`}
+          >
+            <Check className="w-3.5 h-3.5" />
+            <span>Approved ({approvedCount})</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('rejected')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeTab === 'rejected'
+                ? 'bg-purple-600 dark:bg-amber-400 text-white dark:text-slate-950 shadow-md'
+                : 'bg-slate-50 dark:bg-[#180d38] text-slate-600 dark:text-purple-300 hover:text-slate-900 border border-slate-200 dark:border-purple-500/20'
+            }`}
+          >
+            <XCircle className="w-3.5 h-3.5" />
+            <span>Rejected ({rejectedCount})</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('all')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeTab === 'all'
+                ? 'bg-purple-600 dark:bg-amber-400 text-white dark:text-slate-950 shadow-md'
+                : 'bg-slate-50 dark:bg-[#180d38] text-slate-600 dark:text-purple-300 hover:text-slate-900 border border-slate-200 dark:border-purple-500/20'
+            }`}
+          >
+            <Filter className="w-3.5 h-3.5" />
+            <span>All ({submissions.length})</span>
+          </button>
+        </div>
+      </div>
+
       {error && (
         <div className="p-4 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-400 rounded-xl flex items-center gap-3 border border-red-200 dark:border-red-500/30">
           <AlertCircle className="w-5 h-5 flex-shrink-0" />
@@ -293,11 +374,12 @@ export default function AdminSubmissionsPage() {
 
       <div className="bg-white dark:bg-[#130b2c]/80 backdrop-blur-md rounded-3xl shadow-sm dark:shadow-lg dark:shadow-purple-900/20 border border-slate-200 dark:border-purple-500/20 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[800px]">
+          <table className="w-full text-left border-collapse min-w-[850px]">
             <thead>
               <tr className="bg-slate-50 dark:bg-purple-950/40 border-b border-slate-200 dark:border-purple-500/20">
                 <th className="py-4 px-6 text-xs font-black text-slate-600 dark:text-amber-400 uppercase tracking-wider">Mission / Job</th>
                 <th className="py-4 px-6 text-xs font-black text-slate-600 dark:text-amber-400 uppercase tracking-wider">Worker</th>
+                <th className="py-4 px-6 text-xs font-black text-slate-600 dark:text-amber-400 uppercase tracking-wider">Date & Time (তারিখ ও সময়)</th>
                 <th className="py-4 px-6 text-xs font-black text-slate-600 dark:text-amber-400 uppercase tracking-wider">Reward</th>
                 <th className="py-4 px-6 text-xs font-black text-slate-600 dark:text-amber-400 uppercase tracking-wider">Proof</th>
                 <th className="py-4 px-6 text-xs font-black text-slate-600 dark:text-amber-400 uppercase tracking-wider">Status</th>
@@ -305,14 +387,14 @@ export default function AdminSubmissionsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-purple-900/30">
-              {submissions.length === 0 ? (
+              {displayedSubmissions.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-slate-500 dark:text-purple-300/60 font-bold">
-                    No submissions found.
+                  <td colSpan={7} className="py-8 text-center text-slate-500 dark:text-purple-300/60 font-bold">
+                    No submissions found for this status.
                   </td>
                 </tr>
               ) : (
-                submissions.map(submission => (
+                displayedSubmissions.map(submission => (
                   <tr key={submission.id} className="hover:bg-slate-50 dark:hover:bg-purple-900/20 transition-colors">
                     <td className="py-4 px-6">
                       <div className="text-sm font-bold text-slate-900 dark:text-white line-clamp-1">
@@ -324,15 +406,17 @@ export default function AdminSubmissionsPage() {
                     </td>
                     <td className="py-4 px-6">
                       <div className="text-sm font-mono text-purple-700 dark:text-amber-300 font-bold">
-                        Worker #{submission.worker?.display_id || 'Error/Missing'}
-                      </div>
-                      <div className="text-xs text-slate-500 dark:text-purple-300/60 font-medium">
-                        {submission.createdAt ? new Date(submission.createdAt).toLocaleDateString() : ''}
+                        User #{formatUserDisplayId(submission.worker?.display_id, submission.workerId)}
                       </div>
                     </td>
                     <td className="py-4 px-6">
-                      <span className="text-sm font-black text-emerald-600 dark:text-amber-400">
-                        +${submission.job?.price_per_task ? Number(submission.job.price_per_task).toFixed(2) : '0.00'}
+                      <div className="text-xs font-bold text-slate-700 dark:text-purple-200 font-mono">
+                        {formatDateTime(submission.createdAt)}
+                      </div>
+                    </td>
+                    <td className="py-4 px-6">
+                      <span className="text-sm font-black text-emerald-600 dark:text-amber-400 font-mono">
+                        +${submission.job?.price_per_task ? Number(submission.job.price_per_task).toFixed(2) : '0.25'}
                       </span>
                     </td>
                     <td className="py-4 px-6 max-w-xs">
@@ -358,33 +442,40 @@ export default function AdminSubmissionsPage() {
                       }`}>
                         {submission.status}
                       </span>
+                      {(submission.rejection_reason || submission.rejectionReason) && (
+                        <p className="text-[10px] text-rose-600 dark:text-rose-400 font-bold mt-1 line-clamp-1">
+                          কারণ: {submission.rejection_reason || submission.rejectionReason}
+                        </p>
+                      )}
                     </td>
-                    <td className="p-3">
+                    <td className="p-3 text-right">
                       {submission.status === 'pending' ? (
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center justify-end gap-2">
                           <button
-                            disabled={actionLoading === submission.id}
+                            disabled={actionLoading === submission.id || actionLockRef.current.has(submission.id)}
                             onClick={() => handleApprove(submission)}
-                            className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-semibold transition disabled:opacity-50"
+                            className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-semibold transition disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
                           >
                             Approve
                           </button>
                           <button
-                            disabled={actionLoading === submission.id}
-                            onClick={() => handleReject(submission)}
-                            className="px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-xs font-semibold transition disabled:opacity-50"
+                            disabled={actionLoading === submission.id || actionLockRef.current.has(submission.id)}
+                            onClick={() => setRejectingSub(submission)}
+                            className="px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-xs font-semibold transition disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
                           >
                             Reject
                           </button>
                         </div>
                       ) : (
-                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-                          submission.status === 'approved' 
-                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                            : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
-                        }`}>
-                          {submission.status === 'approved' ? 'Approved' : 'Rejected'}
-                        </span>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                            submission.status === 'approved' 
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                              : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                          }`}>
+                            {submission.status === 'approved' ? 'Approved' : 'Rejected'}
+                          </span>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -394,6 +485,15 @@ export default function AdminSubmissionsPage() {
           </table>
         </div>
       </div>
+
+      {/* Mandatory Rejection Reason Modal */}
+      <RejectionReasonModal
+        isOpen={Boolean(rejectingSub)}
+        onClose={() => setRejectingSub(null)}
+        onConfirm={handleConfirmReject}
+        isProcessing={actionLoading === rejectingSub?.id}
+        jobTitle={rejectingSub?.job?.title}
+      />
 
       {/* Interactive Screenshot Preview Modal */}
       {isModalOpen && selectedScreenshots.length > 0 && (

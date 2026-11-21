@@ -3,13 +3,31 @@
 @custom-variant dark (&:is(.dark *));
 
 html {
-  font-size: 80%;
+  font-size: 12px;
   width: 100%;
   min-height: 100%;
   -webkit-text-size-adjust: 100%;
   overflow-x: clip;
   scroll-behavior: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+@media (min-width: 480px) {
+  html {
+    font-size: 12.5px;
+  }
+}
+
+@media (min-width: 768px) {
+  html {
+    font-size: 13px;
+  }
+}
+
+@media (min-width: 1024px) {
+  html {
+    font-size: 13.5px;
+  }
 }
 
 body {
@@ -19,7 +37,6 @@ body {
   overscroll-behavior-y: auto;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
 }
 
 html, body, #root {
@@ -28,6 +45,10 @@ html, body, #root {
   margin: 0;
   padding: 0;
   -webkit-tap-highlight-color: transparent;
+}
+
+input, textarea, select {
+  font-size: max(13px, 1rem);
 }
 
 

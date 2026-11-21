@@ -1,12 +1,8 @@
 export const ADMIN_EMAILS: string[] = [
-  'ahharunurrashidharun@gmail.com',
-  'harunbhai2728@gmail.com',
+  'incomezone2729@gmail.com',
 ];
 
-export const ADMIN_USERNAMES: string[] = [
-  'harunbhai',
-  'harun',
-];
+export const ADMIN_USERNAMES: string[] = [];
 
 export function checkIsAdmin(
   user: {

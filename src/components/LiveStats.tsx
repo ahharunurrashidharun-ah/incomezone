@@ -3,6 +3,7 @@ import CountUp from 'react-countup';
 import { useInView } from 'react-intersection-observer';
 import { Users, Briefcase, CheckCircle2, DollarSign, Activity } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
+import { checkIsAdmin } from '../lib/adminConfig';
 import { isTableMissingError, getLocalJobs, getLocalSubmissions } from '../lib/localFallbackStore';
 
 interface StatsData {
@@ -24,17 +25,21 @@ export default function LiveStats() {
 
   const fetchLiveStats = async () => {
     try {
-      // 1. Fetch Users Count
+      // 1. Fetch Users Count (exclude deleted users and admin account so platform starts from 0)
       let userCount = 0;
       try {
-        const { count, error: userError } = await supabase
+        const { data: usersData, error: userError } = await supabase
           .from('users')
-          .select('id', { count: 'exact', head: true });
-        if (!userError && typeof count === 'number') {
-          userCount = count;
+          .select('id, email, username, role, status');
+        if (!userError && Array.isArray(usersData)) {
+          userCount = usersData.filter((u: any) => {
+            if (u.status === 'deleted' || u.role === 'deleted') return false;
+            if (checkIsAdmin({ email: u.email, username: u.username, role: u.role })) return false;
+            return true;
+          }).length;
         }
       } catch {
-        // fallback
+        // fallback 0
       }
 
       // 2. Fetch Active Jobs Count
@@ -46,7 +51,7 @@ export default function LiveStats() {
           .eq('status', 'active');
         if (!jobError && typeof count === 'number') {
           activeJobCount = count;
-        } else {
+        } else if (jobError && isTableMissingError(jobError)) {
           activeJobCount = getLocalJobs().filter((j: any) => j.status === 'active').length;
         }
       } catch {
@@ -62,7 +67,7 @@ export default function LiveStats() {
           .eq('status', 'approved');
         if (!subError && typeof count === 'number') {
           completedCount = count;
-        } else {
+        } else if (subError && isTableMissingError(subError)) {
           completedCount = getLocalSubmissions().filter((s: any) => s.status === 'approved').length;
         }
       } catch {
@@ -77,32 +82,30 @@ export default function LiveStats() {
           .select('amount, status')
           .eq('status', 'approved');
 
-        if (!wError && withdrawData && withdrawData.length > 0) {
+        if (!wError && Array.isArray(withdrawData)) {
           const sum = withdrawData.reduce((acc: number, item: any) => acc + Number(item.amount || 0), 0);
           paidTotal = sum;
         }
       } catch {
-        // fallback
+        // fallback 0
       }
 
-      // 5. Fetch Marketing Stats Override
+      // 5. Fetch Marketing Stats Override (DB is primary source of truth)
       try {
-        let settingsData = null;
-        try {
-          const localSS = localStorage.getItem('iz_site_settings');
-          if (localSS) {
-            settingsData = JSON.parse(localSS);
-          }
-        } catch (e) {}
-
-        const { data: dbData } = await supabase
+        let settingsData: any = null;
+        const { data: dbData, error: ssError } = await supabase
           .from('site_settings')
           .select('*')
           .eq('id', 1)
           .maybeSingle();
 
-        if (dbData) {
+        if (!ssError) {
           settingsData = dbData;
+        } else if (isTableMissingError(ssError)) {
+          try {
+            const localSS = localStorage.getItem('iz_site_settings');
+            if (localSS) settingsData = JSON.parse(localSS);
+          } catch {}
         }
           
         if (settingsData && settingsData.stats_mode === 'manual') {
@@ -153,6 +156,17 @@ export default function LiveStats() {
       })
       .subscribe();
 
+    const withdrawChannel = supabase
+      .channel('live-stats-withdraws')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'withdraw_requests' }, () => {
+        fetchLiveStats();
+      })
+      .subscribe();
+
+    const handleLocalUpdate = () => fetchLiveStats();
+    window.addEventListener('iz_users_updated', handleLocalUpdate);
+    window.addEventListener('iz_balance_updated', handleLocalUpdate);
+
     // Fallback polling interval every 10 seconds
     const interval = setInterval(fetchLiveStats, 10000);
 
@@ -160,6 +174,9 @@ export default function LiveStats() {
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(jobsChannel);
       supabase.removeChannel(subsChannel);
+      supabase.removeChannel(withdrawChannel);
+      window.removeEventListener('iz_users_updated', handleLocalUpdate);
+      window.removeEventListener('iz_balance_updated', handleLocalUpdate);
       clearInterval(interval);
     };
   }, []);
@@ -234,7 +251,7 @@ export default function LiveStats() {
           return (
             <div
               key={item.id}
-              className="bg-white dark:bg-[#130b2c] border border-slate-200 dark:border-purple-500/20 rounded-3xl p-6 shadow-xl shadow-slate-200/50 dark:shadow-purple-950/50 hover:border-amber-400/50 transition-all duration-300 group hover:-translate-y-1"
+              className="bg-white dark:bg-[#130b2c] border border-slate-200 dark:border-purple-500/20 rounded-3xl p-6 shadow-xl shadow-slate-200/50 dark:shadow-purple-950/50 hover:border-purple-300 dark:hover:border-amber-400/50 transition-all duration-300 group hover:-translate-y-1"
             >
               <div className="flex items-center justify-between mb-4">
                 <div
@@ -242,7 +259,7 @@ export default function LiveStats() {
                 >
                   <Icon className="w-6 h-6" />
                 </div>
-                <Activity className="w-4 h-4 text-slate-300 dark:text-purple-500/40 group-hover:text-amber-400 transition-colors" />
+                <Activity className="w-4 h-4 text-slate-300 dark:text-purple-500/40 group-hover:text-purple-600 dark:group-hover:text-amber-400 transition-colors" />
               </div>
 
               <div className="text-3xl sm:text-4xl font-black text-slate-900 dark:text-white tracking-tight mb-2">

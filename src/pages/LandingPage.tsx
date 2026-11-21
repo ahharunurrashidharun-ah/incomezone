@@ -82,7 +82,7 @@ export default function LandingPage() {
         return;
       }
 
-      if (data && data.length > 0) {
+      if (data) {
         const formatted = data.map((j: any) => ({
           id: j.id,
           title: j.title || 'Micro Job Task',
@@ -93,21 +93,6 @@ export default function LandingPage() {
           occupiedSlots: Number(j.occupied_slots || j.occupiedSlots || 0),
         }));
         setFeaturedJobs(formatted);
-      } else {
-        const local = getLocalJobs()
-          .filter((j: any) => j.status === 'active')
-          .sort((a: any, b: any) => Number(b.price_per_task || 0) - Number(a.price_per_task || 0))
-          .slice(0, 12)
-          .map((j: any) => ({
-            id: j.id,
-            title: j.title || 'Micro Job Task',
-            category: j.category || 'General',
-            location: j.location || 'GLOBAL',
-            pricePerTask: Number(j.price_per_task || j.pricePerTask || 0),
-            totalSlots: Number(j.total_slots || j.totalSlots || 0),
-            occupiedSlots: Number(j.occupied_slots || j.occupiedSlots || 0),
-          }));
-        setFeaturedJobs(local);
       }
     } catch {
       setFeaturedJobs([]);
@@ -121,27 +106,27 @@ export default function LandingPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-[#090514] dark:text-white transition-colors duration-300 font-sans selection:bg-amber-400 selection:text-slate-950 flex flex-col">
+    <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-[#090514] dark:text-white transition-colors duration-300 font-sans selection:bg-purple-500/20 selection:text-purple-900 dark:selection:bg-amber-400 dark:selection:text-slate-950 flex flex-col">
       {/* 1. Header / Navbar */}
       <header className="fixed w-full z-50 bg-white/90 dark:bg-[#090514]/80 backdrop-blur-xl border-b border-slate-200 dark:border-purple-500/20 transition-colors duration-300">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-20">
             {/* Logo */}
             <Link to="/" className="text-2xl font-black tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-400 to-yellow-500 flex items-center justify-center text-slate-950 shadow-md shadow-amber-500/20 font-black">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-600 dark:from-amber-400 dark:to-yellow-500 flex items-center justify-center text-white dark:text-slate-950 shadow-md shadow-purple-600/20 dark:shadow-amber-500/20 font-black">
                 IZ
               </div>
               <span>
-                Income<span className="bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-600 dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 bg-clip-text text-transparent">Zone</span>
+                Income<span className="bg-gradient-to-r from-purple-600 to-indigo-600 dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 bg-clip-text text-transparent">Zone</span>
               </span>
             </Link>
 
             {/* Nav Links */}
             <nav className="hidden md:flex items-center space-x-8 font-bold text-sm text-slate-600 dark:text-purple-200/80">
-              <a href="#how-it-works" className="hover:text-amber-500 dark:hover:text-amber-300 transition-colors">How It Works</a>
-              <a href="#live-stats" className="hover:text-amber-500 dark:hover:text-amber-300 transition-colors">Live Stats</a>
-              <a href="#featured-jobs" className="hover:text-amber-500 dark:hover:text-amber-300 transition-colors">Top Jobs</a>
-              <a href="#why-us" className="hover:text-amber-500 dark:hover:text-amber-300 transition-colors">Why Choose Us</a>
+              <a href="#how-it-works" className="hover:text-purple-600 dark:hover:text-amber-300 transition-colors">How It Works</a>
+              <a href="#live-stats" className="hover:text-purple-600 dark:hover:text-amber-300 transition-colors">Live Stats</a>
+              <a href="#featured-jobs" className="hover:text-purple-600 dark:hover:text-amber-300 transition-colors">Top Jobs</a>
+              <a href="#why-us" className="hover:text-purple-600 dark:hover:text-amber-300 transition-colors">Why Choose Us</a>
             </nav>
 
             {/* Actions & Theme Toggle */}
@@ -151,7 +136,7 @@ export default function LandingPage() {
               {user ? (
                 <Link 
                   to={user.role === 'admin' ? '/admin' : '/jobs'} 
-                  className="px-5 py-2.5 rounded-full bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-black shadow-lg shadow-amber-500/20 hover:from-amber-300 hover:to-yellow-400 transition-all duration-300 hover:scale-105 flex items-center gap-2"
+                  className="px-5 py-2.5 rounded-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white dark:from-amber-400 dark:to-yellow-500 dark:hover:from-amber-300 dark:hover:to-yellow-400 dark:text-slate-950 font-black shadow-lg shadow-purple-600/20 dark:shadow-amber-500/20 transition-all duration-300 hover:scale-105 flex items-center gap-2"
                 >
                   <LayoutDashboard className="w-4 h-4" />
                   Dashboard
@@ -160,14 +145,14 @@ export default function LandingPage() {
                 <>
                   <Link 
                     to="/login" 
-                    className="text-sm font-bold text-slate-700 dark:text-purple-200 hover:text-amber-600 dark:hover:text-white transition-colors px-3 py-2"
+                    className="text-sm font-bold text-slate-700 dark:text-purple-200 hover:text-purple-600 dark:hover:text-amber-300 transition-colors px-3 py-2"
                   >
                     Login
                   </Link>
 
                   <Link 
                     to="/signup" 
-                    className="px-5 py-2.5 rounded-full bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-black shadow-lg shadow-amber-500/20 hover:from-amber-300 hover:to-yellow-400 transition-all duration-300 hover:scale-105"
+                    className="px-5 py-2.5 rounded-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white dark:from-amber-400 dark:to-yellow-500 dark:hover:from-amber-300 dark:hover:to-yellow-400 dark:text-slate-950 font-black shadow-lg shadow-purple-600/20 dark:shadow-amber-500/20 transition-all duration-300 hover:scale-105"
                   >
                     Register Now
                   </Link>
@@ -186,7 +171,7 @@ export default function LandingPage() {
             {/* Left Column */}
             <div className="lg:col-span-7 text-center lg:text-left">
               <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black text-slate-900 dark:text-white tracking-tight leading-[1.15] mb-6">
-                Turn Your Free Time Into <span className="bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-600 dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 bg-clip-text text-transparent">Real Income Daily.</span>
+                Turn Your Free Time Into <span className="bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 bg-clip-text text-transparent">Real Income Daily.</span>
               </h1>
 
               <p className="text-base sm:text-lg font-medium text-slate-600 dark:text-purple-200/80 mb-8 max-w-2xl mx-auto lg:mx-0 leading-relaxed">
@@ -196,7 +181,7 @@ export default function LandingPage() {
               <div className="flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-4">
                 <Link 
                   to="/signup" 
-                  className="w-full sm:w-auto inline-flex justify-center items-center px-8 py-4 text-base font-black text-slate-950 bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 rounded-2xl shadow-xl shadow-amber-500/25 transition-all duration-300 hover:scale-105"
+                  className="w-full sm:w-auto inline-flex justify-center items-center px-8 py-4 text-base font-black text-white bg-purple-600 hover:bg-purple-700 dark:bg-gradient-to-r dark:from-amber-400 dark:to-yellow-500 dark:hover:from-amber-300 dark:hover:to-yellow-400 dark:text-slate-950 rounded-2xl shadow-xl shadow-purple-600/20 dark:shadow-amber-500/25 transition-all duration-300 hover:scale-105"
                 >
                   Register Now
                   <ArrowRight className="w-5 h-5 ml-2" />
@@ -204,7 +189,7 @@ export default function LandingPage() {
 
                 <Link 
                   to="/login" 
-                  className="w-full sm:w-auto inline-flex justify-center items-center px-8 py-4 text-base font-bold text-slate-800 dark:text-purple-200 bg-white dark:bg-[#130b2c]/80 border border-slate-300 dark:border-purple-500/30 rounded-2xl hover:border-amber-400 shadow-md hover:shadow-lg transition-all"
+                  className="w-full sm:w-auto inline-flex justify-center items-center px-8 py-4 text-base font-bold text-slate-800 dark:text-purple-200 bg-white dark:bg-[#130b2c]/80 border border-slate-300 dark:border-purple-500/30 rounded-2xl hover:border-purple-500 dark:hover:border-amber-400 shadow-md hover:shadow-lg transition-all"
                 >
                   Login
                 </Link>
@@ -217,7 +202,7 @@ export default function LandingPage() {
                   <span>Instant Payouts</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-amber-500" />
+                  <CheckCircle2 className="w-4 h-4 text-purple-600 dark:text-amber-400" />
                   <span>Verified Employers</span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -230,15 +215,15 @@ export default function LandingPage() {
             {/* Right Column - Interactive Preview Card */}
             <div className="lg:col-span-5 relative">
               <div className="relative w-full max-w-md mx-auto">
-                <div className="bg-white dark:bg-[#130b2c]/90 backdrop-blur-2xl border border-slate-200 dark:border-purple-500/30 shadow-2xl rounded-3xl p-6 sm:p-8 hover:border-amber-400/50 transition-all duration-500">
+                <div className="bg-white dark:bg-[#130b2c]/90 backdrop-blur-2xl border border-slate-200 dark:border-purple-500/30 shadow-2xl rounded-3xl p-6 sm:p-8 hover:border-purple-300 dark:hover:border-amber-400/50 transition-all duration-500">
                   <div className="flex items-center justify-between mb-6">
                     <div>
                       <p className="text-xs font-black text-slate-400 dark:text-purple-300/60 uppercase tracking-wider">User Earning Activity</p>
-                      <p className="text-3xl font-black bg-gradient-to-r from-amber-500 to-yellow-500 dark:from-amber-300 dark:to-yellow-400 bg-clip-text text-transparent mt-1">
+                      <p className="text-3xl font-black bg-gradient-to-r from-purple-600 to-indigo-600 dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 bg-clip-text text-transparent mt-1">
                         $2,450.80 Total
                       </p>
                     </div>
-                    <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center font-black">
+                    <div className="w-12 h-12 rounded-2xl bg-purple-500/10 text-purple-600 dark:bg-amber-500/10 dark:text-amber-400 flex items-center justify-center font-black">
                       <DollarSign className="w-6 h-6" />
                     </div>
                   </div>
@@ -259,7 +244,7 @@ export default function LandingPage() {
                             <p className="text-[10px] text-slate-400 dark:text-purple-300/50 font-medium">{item.time}</p>
                           </div>
                         </div>
-                        <span className="text-xs font-black text-amber-500">{item.payout}</span>
+                        <span className="text-xs font-black text-purple-600 dark:text-amber-400">{item.payout}</span>
                       </div>
                     ))}
                   </div>
@@ -295,7 +280,7 @@ export default function LandingPage() {
                   title: 'Create Account',
                   desc: 'Sign up for free in under 60 seconds with instant verification.',
                   icon: Users,
-                  color: 'text-amber-500 bg-amber-500/10 border-amber-500/30',
+                  color: 'text-purple-600 dark:text-amber-400 bg-purple-500/10 dark:bg-amber-500/10 border-purple-500/30 dark:border-amber-500/30',
                 },
                 {
                   step: '02',
@@ -323,7 +308,7 @@ export default function LandingPage() {
                 return (
                   <div
                     key={i}
-                    className="relative bg-white dark:bg-[#130b2c]/80 backdrop-blur-xl border border-slate-200 dark:border-purple-500/20 rounded-3xl p-8 shadow-lg shadow-slate-200/50 dark:shadow-purple-950/40 hover:border-amber-400/50 transition-all duration-300"
+                    className="relative bg-white dark:bg-[#130b2c]/80 backdrop-blur-xl border border-slate-200 dark:border-purple-500/20 rounded-3xl p-8 shadow-lg shadow-slate-200/50 dark:shadow-purple-950/40 hover:border-purple-300 dark:hover:border-amber-400/50 transition-all duration-300"
                   >
                     <div className="flex items-center justify-between mb-6">
                       <div className={`w-14 h-14 rounded-2xl flex items-center justify-center border font-black ${item.color}`}>
@@ -352,7 +337,7 @@ export default function LandingPage() {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="flex flex-col sm:flex-row sm:items-end justify-between mb-12 gap-4">
               <div>
-                <span className="text-xs font-black text-amber-500 uppercase tracking-widest">
+                <span className="text-xs font-black text-purple-600 dark:text-amber-400 uppercase tracking-widest">
                   Live Opportunities
                 </span>
                 <h2 className="text-3xl font-black text-slate-900 dark:text-white mt-1 tracking-tight">
@@ -365,7 +350,7 @@ export default function LandingPage() {
 
               <Link
                 to="/signup"
-                className="inline-flex items-center text-sm font-black text-amber-500 hover:text-amber-600 transition-colors"
+                className="inline-flex items-center text-sm font-black text-purple-600 hover:text-purple-700 dark:text-amber-400 dark:hover:text-amber-300 transition-colors"
               >
                 View All Jobs
                 <ChevronRight className="w-4 h-4 ml-1" />
@@ -383,11 +368,11 @@ export default function LandingPage() {
                 {featuredJobs.map((job) => (
                   <div
                     key={job.id}
-                    className="bg-slate-50 dark:bg-[#130b2c]/80 backdrop-blur-xl border border-slate-200 dark:border-purple-500/20 rounded-3xl p-6 shadow-md hover:shadow-xl dark:hover:border-amber-400/50 transition-all flex flex-col justify-between"
+                    className="bg-slate-50 dark:bg-[#130b2c]/80 backdrop-blur-xl border border-slate-200 dark:border-purple-500/20 rounded-3xl p-6 shadow-md hover:shadow-xl hover:border-purple-300 dark:hover:border-amber-400/50 transition-all flex flex-col justify-between"
                   >
                     <div>
                       <div className="flex items-center justify-between mb-3">
-                        <span className="px-3 py-1 rounded-full text-xs font-black bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                        <span className="px-3 py-1 rounded-full text-xs font-black bg-purple-50 text-purple-700 border border-purple-200 dark:bg-amber-500/10 dark:text-amber-400 dark:border-amber-500/20">
                           {job.category}
                         </span>
                         <span className="text-xs font-bold text-slate-400 dark:text-purple-300/50 flex items-center">
@@ -416,7 +401,7 @@ export default function LandingPage() {
 
                       <Link
                         to="/signup"
-                        className="w-full py-2.5 rounded-2xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs text-center block transition-all shadow-md shadow-amber-500/10"
+                        className="w-full py-2.5 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white dark:bg-amber-400 dark:hover:bg-amber-300 dark:text-slate-950 font-black text-xs text-center block transition-all shadow-md shadow-purple-600/15 dark:shadow-amber-500/10"
                       >
                         Apply for Job
                       </Link>
@@ -441,8 +426,8 @@ export default function LandingPage() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-              <div className="bg-white dark:bg-[#130b2c]/80 backdrop-blur-xl border border-slate-200 dark:border-purple-500/20 rounded-3xl p-8 shadow-md">
-                <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center font-black mb-6">
+              <div className="bg-white dark:bg-[#130b2c]/80 backdrop-blur-xl border border-slate-200 dark:border-purple-500/20 rounded-3xl p-8 shadow-md hover:border-purple-300 dark:hover:border-amber-400/40 transition-all">
+                <div className="w-12 h-12 rounded-2xl bg-purple-500/10 text-purple-600 dark:bg-amber-500/10 dark:text-amber-400 flex items-center justify-center font-black mb-6">
                   <Award className="w-6 h-6" />
                 </div>
                 <h3 className="text-xl font-extrabold text-slate-900 dark:text-white mb-2">High Approval Rates</h3>

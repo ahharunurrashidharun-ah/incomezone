@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { supabase, formatJobDisplayId } from '../../lib/supabaseClient';
+import { supabase, formatJobDisplayId, formatDateTime } from '../../lib/supabaseClient';
 import { adminApproveJob, adminRejectJob, deleteJob } from '../../lib/jobService';
 import { 
   CheckCircle, 
@@ -16,9 +16,13 @@ import {
   Tag,
   MapPin,
   RefreshCw,
-  Trash2
+  Trash2,
+  ImageIcon,
+  Eye
 } from 'lucide-react';
 import { getLocalJobs, isTableMissingError } from '../../lib/localFallbackStore';
+import { extractJobImageUrl, cleanJobDescription } from '../../lib/jobImages';
+import toast from 'react-hot-toast';
 
 export default function AdminJobsPage() {
   const [jobs, setJobs] = useState<any[]>([]);
@@ -28,6 +32,7 @@ export default function AdminJobsPage() {
   const [userEmails, setUserEmails] = useState<Record<string, string>>({});
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [selectedRejectJob, setSelectedRejectJob] = useState<any | null>(null);
+  const [previewModalImg, setPreviewModalImg] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('Does not comply with community guidelines');
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -52,6 +57,7 @@ export default function AdminJobsPage() {
           status: j.status || 'pending',
           requiredScreenshots: Number(j.required_screenshots || j.requiredScreenshots || 0),
           requireTextProof: j.require_text_proof ?? j.requireTextProof ?? true,
+          imageUrl: extractJobImageUrl(j) || '',
           rejectionReason: j.rejection_reason || j.rejectionReason,
           createdAt: j.created_at || j.createdAt
         }));
@@ -60,8 +66,17 @@ export default function AdminJobsPage() {
         return;
       }
 
+      if (error) {
+        console.error('Fetch jobs error:', error);
+        setStatusMessage({ type: 'error', text: `জব লোড করতে সমস্যা হয়েছে: ${error.message}` });
+        setLoading(false);
+        return;
+      }
+
       const jobList: any[] = (data || []).map((j: any) => ({
         id: j.id,
+        display_id: j.display_id ?? j.displayId,
+        displayId: j.display_id ?? j.displayId,
         title: j.title,
         description: j.description || j.instructions,
         category: j.category || 'General',
@@ -73,11 +88,16 @@ export default function AdminJobsPage() {
         status: j.status || 'pending',
         requiredScreenshots: Number(j.required_screenshots || j.requiredScreenshots || 0),
         requireTextProof: j.require_text_proof ?? j.requireTextProof ?? true,
+        imageUrl: extractJobImageUrl(j) || '',
         rejectionReason: j.rejection_reason || j.rejectionReason,
         createdAt: j.created_at || j.createdAt
       }));
 
       setJobs(jobList);
+      // Synchronize browser local storage with raw DB records so old ghost jobs don't linger
+      try {
+        localStorage.setItem('iz_fallback_jobs', JSON.stringify(data || []));
+      } catch {}
       setLoading(false);
 
       // Fetch employer emails
@@ -110,6 +130,7 @@ export default function AdminJobsPage() {
         status: j.status || 'pending',
         requiredScreenshots: Number(j.required_screenshots || j.requiredScreenshots || 0),
         requireTextProof: j.require_text_proof ?? j.requireTextProof ?? true,
+        imageUrl: extractJobImageUrl(j) || '',
         rejectionReason: j.rejection_reason || j.rejectionReason,
         createdAt: j.created_at || j.createdAt
       }));
@@ -137,8 +158,10 @@ export default function AdminJobsPage() {
   const handleApprove = async (jobId: string, title: string) => {
     try {
       setActionLoading(jobId);
+      setStatusMessage(null);
       await adminApproveJob(jobId);
       await fetchJobs();
+      toast.success(`Job "${title}" অ্যাপ্রুভ করা হয়েছে!`);
       setStatusMessage({
         type: 'success',
         text: `Job "${title}" has been approved and is now live in Find Jobs!`
@@ -146,9 +169,11 @@ export default function AdminJobsPage() {
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (err: any) {
       console.error('Approve job error:', err);
+      const msg = err?.message || 'Failed to approve job. Please try again.';
+      toast.error(msg);
       setStatusMessage({
         type: 'error',
-        text: 'Failed to approve job. Please try again.'
+        text: msg
       });
     } finally {
       setActionLoading(null);
@@ -162,10 +187,12 @@ export default function AdminJobsPage() {
 
     try {
       setActionLoading(jobId);
+      setStatusMessage(null);
       await adminRejectJob(jobId, rejectReason);
       await fetchJobs();
       setSelectedRejectJob(null);
       setRejectReason('Does not comply with community guidelines');
+      toast.success('জবটি রিজেক্ট ও ব্যালেন্স রিফান্ড করা হয়েছে!');
       setStatusMessage({
         type: 'success',
         text: `Job rejected. $${totalRefund.toFixed(2)} was refunded to the employer's deposit balance.`
@@ -173,9 +200,11 @@ export default function AdminJobsPage() {
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (err: any) {
       console.error('Reject job error:', err);
+      const msg = err?.message || 'Failed to reject and refund job.';
+      toast.error(msg);
       setStatusMessage({
         type: 'error',
-        text: 'Failed to reject and refund job.'
+        text: msg
       });
     } finally {
       setActionLoading(null);
@@ -186,8 +215,10 @@ export default function AdminJobsPage() {
     if (!window.confirm(`Are you sure you want to permanently delete job "${title}"?`)) return;
     try {
       setActionLoading(jobId);
+      setStatusMessage(null);
       await deleteJob(jobId);
       await fetchJobs();
+      toast.success(`Job "${title}" স্থায়ীভাবে ডিলিট করা হয়েছে।`);
       setStatusMessage({
         type: 'success',
         text: `Job "${title}" deleted permanently.`
@@ -195,9 +226,11 @@ export default function AdminJobsPage() {
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (err: any) {
       console.error('Delete job error:', err);
+      const msg = err?.message || 'Failed to delete job.';
+      toast.error(msg);
       setStatusMessage({
         type: 'error',
-        text: 'Failed to delete job.'
+        text: msg
       });
     } finally {
       setActionLoading(null);
@@ -381,12 +414,39 @@ export default function AdminJobsPage() {
                   </div>
                 </div>
 
-                {/* Middle: Title & Description */}
+                {/* Middle: Thumbnail, Title & Description */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                   <div className="lg:col-span-2 space-y-2">
-                    <h3 className="text-lg font-bold text-slate-900 dark:text-white tracking-tight">{job.title}</h3>
+                    <div className="flex items-start gap-3">
+                      {job.imageUrl && (
+                        <div 
+                          onClick={() => setPreviewModalImg(job.imageUrl)}
+                          className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden border border-purple-200 dark:border-purple-500/30 bg-slate-100 dark:bg-[#080412] flex-shrink-0 cursor-pointer group relative shadow-xs"
+                          title="Click to view full image"
+                        >
+                          <img 
+                            src={job.imageUrl} 
+                            alt={job.title} 
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).style.display = 'none';
+                            }}
+                          />
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                            <Eye className="w-4 h-4 text-amber-300" />
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-lg font-bold text-slate-900 dark:text-white tracking-tight">{job.title}</h3>
+                        <p className="text-xs text-slate-500 dark:text-purple-300/70 mt-0.5 line-clamp-1">
+                          Category: <span className="font-semibold text-purple-600 dark:text-amber-400">{job.category}</span>
+                        </p>
+                      </div>
+                    </div>
+
                     <div className="p-3 bg-slate-50 dark:bg-[#0a0718] rounded-xl border border-slate-200 dark:border-purple-900/40 text-xs text-slate-600 dark:text-purple-200/90 leading-relaxed max-h-28 overflow-y-auto whitespace-pre-wrap">
-                      {job.description}
+                      {cleanJobDescription(job.description)}
                     </div>
                   </div>
 
@@ -422,7 +482,7 @@ export default function AdminJobsPage() {
                 {/* Bottom Row: Actions */}
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-purple-900/50">
                   <span className="text-xs text-slate-400 dark:text-purple-400/60 font-mono">
-                    Job ID: #{formatJobDisplayId(job.display_id || job.displayId, job.id)} • Posted: {job.createdAt?.toDate?.() ? job.createdAt.toDate().toLocaleString() : 'Recent'}
+                    Job ID: #{formatJobDisplayId(job.display_id || job.displayId, job.id)} • Posted: {formatDateTime(job.createdAt)}
                   </span>
 
                   <div className="flex items-center gap-3 w-full sm:w-auto">
@@ -527,6 +587,24 @@ export default function AdminJobsPage() {
                 Confirm Rejection & Refund
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Enlarged Image Preview Modal */}
+      {previewModalImg && (
+        <div 
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setPreviewModalImg(null)}
+        >
+          <div className="relative max-w-3xl max-h-[85vh] bg-[#130b2c] rounded-2xl overflow-hidden border border-purple-500/30 p-2 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <button
+              onClick={() => setPreviewModalImg(null)}
+              className="absolute top-4 right-4 p-2 bg-black/70 hover:bg-black text-white rounded-full transition-all"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img src={previewModalImg} alt="Enlarged Job Thumbnail" className="max-h-[80vh] w-auto mx-auto object-contain rounded-xl" />
           </div>
         </div>
       )}

@@ -14,8 +14,10 @@ import PostJobPage from './pages/PostJobPage';
 import MyJobsPage from './pages/MyJobsPage';
 import DepositPage from './pages/DepositPage';
 import ProfilePage from './pages/ProfilePage';
+import NotificationsPage from './pages/NotificationsPage';
 import { AuthProvider } from './contexts/AuthContext';
 import { ThemeProvider } from './contexts/ThemeContext';
+import { ZoomProvider } from './contexts/ZoomContext';
 import ProtectedRoute from './components/ProtectedRoute';
 
 import SubmittedJobPage from './pages/SubmittedJobPage';
@@ -36,20 +38,25 @@ import PrivacyPage from './pages/PrivacyPage';
 import RefundPage from './pages/RefundPage';
 import RulesPage from './pages/RulesPage';
 import BlogPage from './pages/BlogPage';
+import AccountStatusPage from './pages/AccountStatusPage';
 import ScrollToTop from './components/ScrollToTop';
+import TelegramNotificationListener from './components/TelegramNotificationListener';
 
 export default function App() {
   return (
     <ThemeProvider>
-      <AuthProvider>
-        <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
-        <Router>
-          <ScrollToTop />
-        <Routes>
+      <ZoomProvider>
+        <AuthProvider>
+          <TelegramNotificationListener />
+          <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
+          <Router>
+            <ScrollToTop />
+          <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignUpPage />} />
           <Route path="/register" element={<SignUpPage />} />
+          <Route path="/account-status" element={<AccountStatusPage />} />
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/refund" element={<RefundPage />} />
@@ -88,10 +95,12 @@ export default function App() {
             <Route path="/deposit" element={<DepositPage />} />
             <Route path="/withdraw" element={<WithdrawPage />} />
             <Route path="/profile" element={<ProfilePage />} />
+            <Route path="/notifications" element={<NotificationsPage />} />
           </Route>
         </Routes>
       </Router>
     </AuthProvider>
-  </ThemeProvider>
+  </ZoomProvider>
+</ThemeProvider>
   );
 }

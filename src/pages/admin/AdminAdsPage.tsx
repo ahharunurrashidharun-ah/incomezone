@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { supabase } from '../../lib/supabaseClient';
+import { supabase, formatDateTime } from '../../lib/supabaseClient';
 import { 
   CheckCircle, 
   XCircle, 
@@ -14,7 +14,7 @@ import {
   DollarSign,
   Trash2
 } from 'lucide-react';
-import { getLocalAds, isTableMissingError, saveLocalAd } from '../../lib/localFallbackStore';
+import { getLocalAds, isTableMissingError, saveLocalAd, saveLocalNotification } from '../../lib/localFallbackStore';
 
 export default function AdminAdsPage() {
   const [ads, setAds] = useState<any[]>([]);
@@ -50,9 +50,16 @@ export default function AdminAdsPage() {
         return;
       }
 
+      if (error) {
+        console.error('Fetch ads error:', error);
+        setStatusMessage({ type: 'error', text: `অ্যাড লোড করতে সমস্যা হয়েছে: ${error.message}` });
+        setLoading(false);
+        return;
+      }
+
       const adList: any[] = (data || []).map((a: any) => ({
         id: a.id,
-        ownerId: a.owner_id || a.ownerId || '',
+        ownerId: a.owner_id || a.ownerId || a.user_id || '',
         title: a.title || 'Sponsored Ad',
         targetUrl: a.target_url || a.targetUrl || '',
         imageUrl: a.image_url || a.imageUrl || '',
@@ -64,6 +71,9 @@ export default function AdminAdsPage() {
       }));
 
       setAds(adList);
+      try {
+        localStorage.setItem('iz_fallback_ads', JSON.stringify(data || []));
+      } catch {}
       setLoading(false);
 
       // Fetch advertiser emails
@@ -107,6 +117,15 @@ export default function AdminAdsPage() {
 
   useEffect(() => {
     fetchAds();
+    const channel = supabase
+      .channel('admin-ads-channel')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ads' }, () => {
+        fetchAds();
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const handleApproveAd = async (adId: string) => {
@@ -114,13 +133,16 @@ export default function AdminAdsPage() {
       setActionLoading(adId);
       setStatusMessage(null);
 
-      const { error } = await supabase
+      const matchedAd = ads.find(a => a.id === adId);
+
+      const { data: updatedAd, error } = await supabase
         .from('ads')
         .update({ status: 'active' })
-        .eq('id', adId);
+        .eq('id', adId)
+        .select('id, status')
+        .maybeSingle();
 
       if (error && isTableMissingError(error)) {
-        // Fallback local update
         const localAds = getLocalAds();
         const updated = localAds.map((a: any) => {
           if (a.id === adId) {
@@ -129,14 +151,37 @@ export default function AdminAdsPage() {
           return a;
         });
         localStorage.setItem('iz_fallback_ads', JSON.stringify(updated));
+
+        if (matchedAd?.ownerId) {
+          saveLocalNotification(matchedAd.ownerId, {
+            title: 'বিজ্ঞাপন অনুমোদন সফল! 📢',
+            message: `আপনার স্পন্সরকৃত অ্যাড ক্যাম্পেইন "${matchedAd.title || 'Ad'}" সক্রিয় ও লাইভ করা হয়েছে।`,
+            type: 'announcement',
+          });
+        }
+
         setStatusMessage({ type: 'success', text: 'Advertisement approved successfully (Offline Mode).' });
+        window.dispatchEvent(new CustomEvent('iz_ads_updated'));
         fetchAds();
         return;
       }
 
       if (error) throw error;
+      if (!updatedAd || updatedAd.status !== 'active') {
+        throw new Error('ডাটাবেজ পারমিশন (RLS) সমস্যার কারণে অ্যাডটি অ্যাপ্রুভ হয়নি। অনুগ্রহ করে প্রদত্ত Supabase SQL রান করুন।');
+      }
+
+      if (matchedAd?.ownerId) {
+        saveLocalNotification(matchedAd.ownerId, {
+          title: 'বিজ্ঞাপন অনুমোদন সফল! 📢',
+          message: `আপনার স্পন্সরকৃত অ্যাড ক্যাম্পেইন "${matchedAd.title || 'Ad'}" সক্রিয় ও লাইভ করা হয়েছে।`,
+          type: 'announcement',
+        });
+      }
 
       setStatusMessage({ type: 'success', text: 'Advertisement approved and is now Live!' });
+      window.dispatchEvent(new CustomEvent('iz_ads_updated'));
+      window.dispatchEvent(new CustomEvent('iz_users_updated'));
       fetchAds();
     } catch (err: any) {
       console.error(err);
@@ -151,28 +196,14 @@ export default function AdminAdsPage() {
       setActionLoading(ad.id);
       setStatusMessage(null);
 
-      // Refund the user's deposit balance
-      const { data: userData, error: userFetchErr } = await supabase
-        .from('users')
-        .select('deposit_balance')
-        .eq('id', ad.ownerId)
-        .single();
-
-      if (!userFetchErr && userData) {
-        const currentBalance = Number(userData.deposit_balance || 0);
-        await supabase
-          .from('users')
-          .update({ deposit_balance: currentBalance + Number(ad.paidAmount) })
-          .eq('id', ad.ownerId);
-      }
-
-      const { error } = await supabase
+      const { data: updatedAd, error } = await supabase
         .from('ads')
-        .update({ status: 'expired' }) // mark as expired / rejected
-        .eq('id', ad.id);
+        .update({ status: 'expired' })
+        .eq('id', ad.id)
+        .select('id, status')
+        .maybeSingle();
 
       if (error && isTableMissingError(error)) {
-        // Local refund fallback
         const cachedUsers = localStorage.getItem('iz_fallback_users');
         if (cachedUsers) {
           const list = JSON.parse(cachedUsers);
@@ -194,14 +225,52 @@ export default function AdminAdsPage() {
         });
         localStorage.setItem('iz_fallback_ads', JSON.stringify(updatedAds));
 
+        if (ad.ownerId) {
+          saveLocalNotification(ad.ownerId, {
+            title: 'বিজ্ঞাপন রিজেক্টেড ও রিফান্ডেড ⚠️',
+            message: `আপনার স্পন্সরকৃত অ্যাড ক্যাম্পেইন "${ad.title || 'Ad'}" বাতিল করা হয়েছে এবং $${Number(ad.paidAmount).toFixed(2)} ডিপোজিট ওয়ালেটে ফেরত দেওয়া হয়েছে।`,
+            type: 'announcement',
+          });
+        }
+
         setStatusMessage({ type: 'success', text: 'Advertisement rejected and funds refunded (Offline Mode).' });
+        window.dispatchEvent(new CustomEvent('iz_ads_updated'));
         fetchAds();
         return;
       }
 
       if (error) throw error;
+      if (!updatedAd || updatedAd.status !== 'expired') {
+        throw new Error('ডাটাবেজ পারমিশন (RLS) সমস্যার কারণে অ্যাড রিজেক্ট হয়নি। অনুগ্রহ করে প্রদত্ত Supabase SQL রান করুন।');
+      }
+
+      // Refund the user's deposit balance if user exists
+      if (ad.ownerId && Number(ad.paidAmount) > 0) {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('deposit_balance')
+          .eq('id', ad.ownerId)
+          .maybeSingle();
+
+        if (userData) {
+          const currentBalance = Number(userData.deposit_balance || 0);
+          const newBalance = Number((currentBalance + Number(ad.paidAmount)).toFixed(2));
+          await supabase
+            .from('users')
+            .update({ deposit_balance: newBalance })
+            .eq('id', ad.ownerId);
+        }
+
+        saveLocalNotification(ad.ownerId, {
+          title: 'বিজ্ঞাপন রিজেক্টেড ও রিফান্ডেড ⚠️',
+          message: `আপনার স্পন্সরকৃত অ্যাড ক্যাম্পেইন "${ad.title || 'Ad'}" বাতিল করা হয়েছে এবং $${Number(ad.paidAmount).toFixed(2)} ডিপোজিট ওয়ালেটে ফেরত দেওয়া হয়েছে।`,
+          type: 'announcement',
+        });
+      }
 
       setStatusMessage({ type: 'success', text: `Advertisement rejected and $${Number(ad.paidAmount).toFixed(2)} refunded successfully!` });
+      window.dispatchEvent(new CustomEvent('iz_ads_updated'));
+      window.dispatchEvent(new CustomEvent('iz_users_updated'));
       fetchAds();
     } catch (err: any) {
       console.error(err);
@@ -216,20 +285,21 @@ export default function AdminAdsPage() {
     try {
       setActionLoading(adId);
       const { error } = await supabase.from('ads').delete().eq('id', adId);
-      
-      if (error && isTableMissingError(error)) {
-        const local = getLocalAds().filter((a: any) => a.id !== adId);
-        localStorage.setItem('iz_fallback_ads', JSON.stringify(local));
-      } else {
-        const local = getLocalAds().filter((a: any) => a.id !== adId);
-        localStorage.setItem('iz_fallback_ads', JSON.stringify(local));
+
+      if (error && !isTableMissingError(error)) {
+        throw new Error(`ডাটাবেজ থেকে অ্যাড ডিলিট করা যায়নি: ${error.message}`);
       }
 
+      const local = getLocalAds().filter((a: any) => a.id !== adId);
+      localStorage.setItem('iz_fallback_ads', JSON.stringify(local));
+
       setStatusMessage({ type: 'success', text: `Ad "${title}" deleted permanently.` });
+      window.dispatchEvent(new CustomEvent('iz_ads_updated'));
+      window.dispatchEvent(new CustomEvent('iz_users_updated'));
       fetchAds();
     } catch (err: any) {
       console.error('Delete ad error:', err);
-      setStatusMessage({ type: 'error', text: 'Failed to delete advertisement.' });
+      setStatusMessage({ type: 'error', text: err?.message || 'Failed to delete advertisement.' });
     } finally {
       setActionLoading(null);
     }
@@ -433,11 +503,16 @@ export default function AdminAdsPage() {
                   </div>
                   <div className="space-y-1">
                     <span className="text-slate-500 dark:text-purple-300/50 block">Amount Paid:</span>
-                    <span className="text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
+                    <span className="text-emerald-700 dark:text-emerald-400 flex items-center gap-1 font-mono">
                       <DollarSign className="w-3.5 h-3.5" />
                       ${Number(ad.paidAmount).toFixed(2)}
                     </span>
                   </div>
+                </div>
+
+                <div className="text-[11px] font-mono text-slate-400 dark:text-purple-300/60 pt-2 flex items-center justify-between border-t border-slate-100 dark:border-purple-500/10 mt-2">
+                  <span>Submitted Date & Time:</span>
+                  <span className="font-bold text-slate-700 dark:text-purple-200">{formatDateTime(ad.createdAt)}</span>
                 </div>
 
                 {/* Approvals Action Buttons */}

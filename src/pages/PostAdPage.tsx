@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, toValidUUID } from '../lib/supabaseClient';
 import { checkIsAdmin } from '../lib/adminConfig';
@@ -11,8 +11,12 @@ import {
   CreditCard, 
   ArrowRight, 
   AlertCircle,
-  Megaphone
+  Megaphone,
+  Wallet
 } from 'lucide-react';
+import { saveLocalNotification } from '../lib/localFallbackStore';
+import { queueEmailNotification } from '../lib/notificationSender';
+import { sendAdPostedAlert } from '../utils/telegramNotifier';
 
 interface AdPlan {
   id: string;
@@ -187,8 +191,31 @@ export default function PostAdPage() {
 
       if (refreshProfile) await refreshProfile();
 
-      // 5. Success alert & redirection
-      alert('Ad submitted successfully! It will go live after Admin approval.');
+      saveLocalNotification(userUuid, {
+        title: 'অ্যাড পোস্ট জমা হয়েছে! 📢',
+        message: `আপনার পোস্ট করা অ্যাড "${title.trim() || 'Sponsored Ad'}" পর্যালোচনার জন্য জমা হয়েছে। অ্যাডমিন অনুমোদন দিলে এটি লাইভ হবে।`,
+        type: 'announcement',
+      });
+
+      queueEmailNotification({
+        subject: `[IncomeZone] New Ad Submitted: ${title.trim() || 'Sponsored Ad'}`,
+        message: `A new ad has been posted by user ${userUuid}.\nTitle: ${title.trim()}\nPlan: ${selectedPlan.label || selectedPlan.id}\nAmount: $${selectedPlan.price}\n\nPlease review in Admin Panel.`,
+        type: 'ad_post',
+      });
+
+      // Direct Telegram Alert to Admin
+      sendAdPostedAlert({
+        title: title.trim() || 'Sponsored Ad',
+        targetUrl: targetFormatted,
+        durationDays: selectedPlan.days,
+        pricePaid: selectedPlan.price,
+        userEmail: user.email || 'User',
+      });
+
+      // 5. Single success toast alert & redirection
+      import('react-hot-toast').then(({ default: toast }) => {
+        toast.success('অ্যাড পোস্ট সফলভাবে জমা হয়েছে! অ্যাডমিন অ্যাপ্রুভ করলে লাইভ হবে।');
+      });
       navigate('/posted-ads');
 
     } catch (err: any) {
@@ -221,16 +248,13 @@ export default function PostAdPage() {
               <p>{error}</p>
             </div>
             {error.includes("Insufficient") && (
-              <button
-                type="button"
-                onClick={() => {
-                  updateBalances(50, 0);
-                  setError('');
-                }}
-                className="px-4 py-2 bg-purple-600 dark:bg-gradient-to-r dark:from-amber-400 dark:to-yellow-500 hover:bg-purple-700 dark:hover:from-amber-300 dark:hover:to-yellow-400 text-white dark:text-slate-950 font-bold text-xs rounded-lg transition-all shadow-md flex-shrink-0"
+              <Link
+                to="/deposit"
+                className="px-4 py-2 bg-purple-600 dark:bg-gradient-to-r dark:from-amber-400 dark:to-yellow-500 hover:bg-purple-700 dark:hover:from-amber-300 dark:hover:to-yellow-400 text-white dark:text-slate-950 font-bold text-xs rounded-lg transition-all shadow-md flex-shrink-0 inline-flex items-center gap-1.5"
               >
-                + Add $50.00 Test Balance
-              </button>
+                <Wallet className="w-3.5 h-3.5" />
+                <span>ডিপোজিট করুন (Deposit Now)</span>
+              </Link>
             )}
           </div>
         )}

@@ -105,4 +105,38 @@ export function formatUserDisplayId(displayId?: any, rawId?: string): string {
   return '1' + String(positive).slice(1);
 }
 
+/**
+ * Safely formats any date input into a clean, human-readable date and time string e.g. "08 Nov 2026, 05:30 PM".
+ */
+export function formatDateTime(dateInput?: any): string {
+  if (!dateInput) return '—';
+  try {
+    let d: Date;
+    if (typeof dateInput?.toDate === 'function') {
+      d = dateInput.toDate();
+    } else if (typeof dateInput === 'number') {
+      d = new Date(dateInput);
+    } else if (typeof dateInput === 'string') {
+      d = new Date(dateInput);
+    } else if (dateInput instanceof Date) {
+      d = dateInput;
+    } else {
+      d = new Date(dateInput);
+    }
+
+    if (isNaN(d.getTime())) return '—';
+
+    return d.toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+  } catch {
+    return '—';
+  }
+}
+
 export default supabase;

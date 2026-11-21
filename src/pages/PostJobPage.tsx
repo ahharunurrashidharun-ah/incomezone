@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { createJob, uploadFile } from '../lib/jobService';
-import { compressImage } from '../lib/imageCompression';
+import { compressImage, fileToBase64 } from '../lib/imageCompression';
 import { useAuth } from '../contexts/AuthContext';
 import { 
   Briefcase, 
@@ -14,26 +14,23 @@ import {
   Upload, 
   X, 
   Sparkles,
-  Layers
+  Layers,
+  Wallet
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-
-const CATEGORIES = [
-  "YouTube", "Facebook", "Instagram", "TikTok", "Gmail", 
-  "App Install", "Account Create", "Like", "Comment", 
-  "Share", "Subscribe", "Others"
-];
+import { JOB_CATEGORIES } from '../constants/jobCategories';
 
 export default function PostJobPage() {
-  const { user, updateBalances } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+  const submitLockRef = React.useRef(false);
   const [error, setError] = useState('');
   
   const [formData, setFormData] = useState({
     title: '',
     description: '',
-    category: 'YouTube',
+    category: JOB_CATEGORIES[0],
     location: 'GLOBAL',
     pricePerTask: '',
     totalSlots: '',
@@ -78,11 +75,18 @@ export default function PostJobPage() {
     });
   };
 
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setJobImageFile(file);
-      setJobImagePreview(URL.createObjectURL(file));
+      const originalFile = e.target.files[0];
+      try {
+        // Compress image targeting ~20-25 KB (max dimension 600px, quality ~0.55)
+        const compressed = await compressImage(originalFile, 600, 0.55, 25);
+        setJobImageFile(compressed);
+        setJobImagePreview(URL.createObjectURL(compressed));
+      } catch {
+        setJobImageFile(originalFile);
+        setJobImagePreview(URL.createObjectURL(originalFile));
+      }
     }
   };
 
@@ -95,6 +99,9 @@ export default function PostJobPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+    if (submitLockRef.current || loading) return;
+    submitLockRef.current = true;
+
     setError('');
 
     const price = parseFloat(formData.pricePerTask);
@@ -103,21 +110,25 @@ export default function PostJobPage() {
 
     if (!formData.title.trim()) {
       setError('Please provide a title for the job.');
+      submitLockRef.current = false;
       return;
     }
 
     if (!formData.description.trim()) {
       setError('Please describe the steps required to complete this job.');
+      submitLockRef.current = false;
       return;
     }
 
     if (!price || price <= 0) {
       setError('Price per task must be greater than $0.');
+      submitLockRef.current = false;
       return;
     }
 
     if (!slots || slots <= 0) {
       setError('Total slots must be at least 1.');
+      submitLockRef.current = false;
       return;
     }
 
@@ -130,12 +141,26 @@ export default function PostJobPage() {
       let uploadedImageUrl: string | undefined = undefined;
       if (jobImageFile) {
         try {
-          const compressedFile = await compressImage(jobImageFile, 1080, 0.6);
-          uploadedImageUrl = await uploadFile(compressedFile, 'job-images');
+          // Re-compress to ~20KB target
+          const compressedFile = await compressImage(jobImageFile, 600, 0.55, 25);
+          const base64Data = await fileToBase64(compressedFile);
+          uploadedImageUrl = base64Data;
+
+          // Attempt storage upload if configured
+          try {
+            const remoteUrl = await uploadFile(compressedFile, 'job-images');
+            if (remoteUrl && remoteUrl.startsWith('http')) {
+              uploadedImageUrl = remoteUrl;
+            }
+          } catch {
+            // Keep guaranteed base64Data
+          }
         } catch (uploadErr) {
           console.warn('Fallback: image upload failed', uploadErr);
-          uploadedImageUrl = jobImagePreview;
+          uploadedImageUrl = await fileToBase64(jobImageFile);
         }
+      } else if (jobImagePreview && jobImagePreview.startsWith('data:')) {
+        uploadedImageUrl = jobImagePreview;
       }
 
       // Pure job posting with exact employer instruction state
@@ -161,8 +186,12 @@ export default function PostJobPage() {
     } catch (err: any) {
       console.error("Error creating job:", err);
       setError(err.message || 'Failed to post job. Please check your balance or details.');
+      submitLockRef.current = false;
     } finally {
       setLoading(false);
+      setTimeout(() => {
+        submitLockRef.current = false;
+      }, 1500);
     }
   };
 
@@ -188,16 +217,13 @@ export default function PostJobPage() {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <span>{error}</span>
               {error.includes("Insufficient Deposit Balance") && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    updateBalances(50, 0);
-                    setError('');
-                  }}
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 dark:bg-gradient-to-r dark:from-amber-400 dark:to-yellow-500 text-white dark:text-slate-950 font-bold text-xs rounded-lg transition-all shadow-sm self-start sm:self-center"
+                <Link
+                  to="/deposit"
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 dark:bg-gradient-to-r dark:from-amber-400 dark:to-yellow-500 text-white dark:text-slate-950 font-bold text-xs rounded-lg transition-all shadow-sm self-start sm:self-center inline-flex items-center gap-1.5"
                 >
-                  + Add $50.00 Test Balance
-                </button>
+                  <Wallet className="w-3.5 h-3.5" />
+                  <span>ডিপোজিট করুন (Deposit Now)</span>
+                </Link>
               )}
             </div>
           </div>
@@ -277,9 +303,12 @@ export default function PostJobPage() {
                     className="hidden"
                   />
                 </label>
-                <span className="text-xs text-slate-500 dark:text-purple-400/70">
-                  Workers can view this sample image to find your video/page easily.
-                </span>
+                <div className="flex flex-col text-xs text-slate-500 dark:text-purple-400/70">
+                  <span className="font-semibold text-slate-700 dark:text-purple-200">
+                    ছবিটি অটোমেটিকভাবে ~২০ KB এর আশেপাশে কমপ্রেস করা হবে যেন দ্রুত লোড হয় ও সবাই স্পষ্ট দেখতে পায়।
+                  </span>
+                  <span>Workers can view this sample image to identify your video/channel/task easily.</span>
+                </div>
               </div>
             </div>
           </div>
@@ -305,7 +334,7 @@ export default function PostJobPage() {
                     onChange={(e) => setFormData({...formData, category: e.target.value})}
                     className="w-full pl-9 pr-3 py-2.5 bg-slate-50 dark:bg-[#080412] border border-slate-200 dark:border-purple-500/30 rounded-xl text-slate-900 dark:text-white font-semibold text-sm focus:border-purple-600 dark:focus:border-amber-400"
                   >
-                    {CATEGORIES.map(cat => (
+                    {JOB_CATEGORIES.map(cat => (
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                   </select>
@@ -488,8 +517,8 @@ export default function PostJobPage() {
             
             <button
               type="submit"
-              disabled={loading || totalCost <= 0}
-              className="w-full sm:w-auto inline-flex justify-center items-center px-8 py-3.5 rounded-xl text-base font-bold text-white bg-purple-600 hover:bg-purple-700 dark:bg-gradient-to-r dark:from-amber-400 dark:to-yellow-500 dark:hover:from-amber-300 dark:hover:to-yellow-400 dark:text-slate-950 shadow-md shadow-purple-600/20 dark:shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:scale-[1.01] active:scale-98"
+              disabled={loading || totalCost <= 0 || submitLockRef.current}
+              className="w-full sm:w-auto inline-flex justify-center items-center px-8 py-3.5 rounded-xl text-base font-bold text-white bg-purple-600 hover:bg-purple-700 dark:bg-gradient-to-r dark:from-amber-400 dark:to-yellow-500 dark:hover:from-amber-300 dark:hover:to-yellow-400 dark:text-slate-950 shadow-md shadow-purple-600/20 dark:shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none transition-all hover:scale-[1.01] active:scale-98"
             >
               <Briefcase className="w-5 h-5 mr-2" />
               {loading ? 'Posting Job...' : 'Post Job Now'}

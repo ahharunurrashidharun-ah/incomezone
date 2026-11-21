@@ -45,7 +45,7 @@ export default function Footer() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 grid grid-cols-1 md:grid-cols-4 gap-8 mb-12">
         <div>
           <span className="text-2xl font-black tracking-tight text-white block mb-4">
-            Income<span className="text-amber-400">Zone</span>
+            Income<span className="text-purple-600 dark:text-amber-400">Zone</span>
           </span>
           <p className="text-sm font-medium text-slate-400 dark:text-purple-300/60 max-w-xs leading-relaxed">
             The premier global micro-task platform empowering digital workers and providing targeted campaign reach.
@@ -55,21 +55,21 @@ export default function Footer() {
         <div>
           <h4 className="text-white font-black mb-4 tracking-wide uppercase text-xs">Quick Links</h4>
           <ul className="space-y-2.5 text-sm font-bold">
-            <li><Link to="/login" className="hover:text-amber-400 transition-colors">Login to Account</Link></li>
-            <li><Link to="/signup" className="hover:text-amber-400 transition-colors">Register Free</Link></li>
-            <li><Link to="/blog" className="hover:text-amber-400 transition-colors">Blog</Link></li>
-            <li><Link to="/#how-it-works" className="hover:text-amber-400 transition-colors">How It Works</Link></li>
-            <li><Link to="/#live-stats" className="hover:text-amber-400 transition-colors">Real-Time Stats</Link></li>
+            <li><Link to="/login" className="hover:text-purple-600 dark:hover:text-amber-400 transition-colors">Login to Account</Link></li>
+            <li><Link to="/signup" className="hover:text-purple-600 dark:hover:text-amber-400 transition-colors">Register Free</Link></li>
+            <li><Link to="/blog" className="hover:text-purple-600 dark:hover:text-amber-400 transition-colors">Blog</Link></li>
+            <li><Link to="/#how-it-works" className="hover:text-purple-600 dark:hover:text-amber-400 transition-colors">How It Works</Link></li>
+            <li><Link to="/#live-stats" className="hover:text-purple-600 dark:hover:text-amber-400 transition-colors">Real-Time Stats</Link></li>
           </ul>
         </div>
 
         <div>
           <h4 className="text-white font-black mb-4 tracking-wide uppercase text-xs">Legal & Terms</h4>
           <ul className="space-y-2.5 text-sm font-bold">
-            <li><Link to="/privacy" className="hover:text-amber-400 transition-colors">Privacy Policy</Link></li>
-            <li><Link to="/terms" className="hover:text-amber-400 transition-colors">Terms of Service</Link></li>
-            <li><Link to="/refund" className="hover:text-amber-400 transition-colors">Refund Policy</Link></li>
-            <li><Link to="/rules" className="hover:text-amber-400 transition-colors">Community Rules</Link></li>
+            <li><Link to="/privacy" className="hover:text-purple-600 dark:hover:text-amber-400 transition-colors">Privacy Policy</Link></li>
+            <li><Link to="/terms" className="hover:text-purple-600 dark:hover:text-amber-400 transition-colors">Terms of Service</Link></li>
+            <li><Link to="/refund" className="hover:text-purple-600 dark:hover:text-amber-400 transition-colors">Refund Policy</Link></li>
+            <li><Link to="/rules" className="hover:text-purple-600 dark:hover:text-amber-400 transition-colors">Community Rules</Link></li>
           </ul>
         </div>
 
@@ -81,19 +81,19 @@ export default function Footer() {
                 href={links.help_center_url || '#'} 
                 target={links.help_center_url ? "_blank" : "_self"}
                 rel="noopener noreferrer"
-                className="hover:text-amber-400 transition-colors"
+                className="hover:text-purple-600 dark:hover:text-amber-400 transition-colors"
               >
                 Help Center
               </a>
             </li>
             <li>
               <a 
-                href={links.contact_support_url || '#'} 
+                href={links.contact_support_url || 'mailto:incomezone2729@gmail.com'} 
                 target={links.contact_support_url ? "_blank" : "_self"}
                 rel="noopener noreferrer"
-                className="hover:text-amber-400 transition-colors"
+                className="hover:text-purple-600 dark:hover:text-amber-400 transition-colors"
               >
-                Contact Support
+                Contact Support (incomezone2729@gmail.com)
               </a>
             </li>
           </ul>

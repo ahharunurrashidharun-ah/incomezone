@@ -4,11 +4,13 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase, toValidUUID, formatJobDisplayId, formatUserDisplayId } from '../lib/supabaseClient';
 import { approveSubmission, rejectSubmission, deleteJob } from '../lib/jobService';
 import { Briefcase, Users, FileCheck, X, CheckCircle, XCircle, Trash2, ImageIcon, Eye, ImageOff, Filter, Check, Clock } from 'lucide-react';
+import RejectionReasonModal from '../components/RejectionReasonModal';
 import {
   getLocalJobs,
   getLocalSubmissions,
   isTableMissingError,
 } from '../lib/localFallbackStore';
+import { extractJobImageUrl, cleanJobDescription } from '../lib/jobImages';
 import toast from 'react-hot-toast';
 
 const FallbackImage = ({ src, alt, className }: { src: string, alt: string, className: string }) => {
@@ -46,6 +48,7 @@ export default function MyJobsPage() {
   const [previewModalImg, setPreviewModalImg] = useState<string | null>(null);
   const [subFilter, setSubFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [pendingCounts, setPendingCounts] = useState<Record<string, number>>({});
+  const [rejectingSub, setRejectingSub] = useState<any | null>(null);
 
   const countPendingSubmissions = async (jobList: any[]) => {
     // Only jobs that are active or completed AND have at least 1 occupied slot can have worker submissions to review.
@@ -125,6 +128,7 @@ export default function MyJobsPage() {
             occupiedSlots: Number(j.occupied_slots ?? j.occupiedSlots ?? 0),
             pricePerTask: Number(j.price_per_task ?? j.pricePerTask ?? 0),
             status: j.status || 'pending',
+            imageUrl: extractJobImageUrl(j) || '',
             rejectionReason: j.rejection_reason || j.rejectionReason,
             createdAt: j.created_at || j.createdAt,
           }));
@@ -150,6 +154,7 @@ export default function MyJobsPage() {
             occupiedSlots: Number(j.occupied_slots ?? j.occupiedSlots ?? 0),
             pricePerTask: Number(j.price_per_task ?? j.pricePerTask ?? 0),
             status: j.status || 'pending',
+            imageUrl: extractJobImageUrl(j) || '',
             rejectionReason: j.rejection_reason || j.rejectionReason,
             text_proof_instruction: j.text_proof_instruction || j.text_proof_requirement || j.textProofRequirement || '',
             screenshot_instructions: scInst,
@@ -176,6 +181,7 @@ export default function MyJobsPage() {
               occupiedSlots: Number(j.occupied_slots ?? j.occupiedSlots ?? 0),
               pricePerTask: Number(j.price_per_task ?? j.pricePerTask ?? 0),
               status: j.status || 'pending',
+              imageUrl: extractJobImageUrl(j) || '',
               rejectionReason: j.rejection_reason || j.rejectionReason,
               text_proof_instruction: j.text_proof_instruction || j.text_proof_requirement || j.textProofRequirement || '',
               screenshot_instructions: scInst,
@@ -197,6 +203,7 @@ export default function MyJobsPage() {
           occupiedSlots: Number(j.occupied_slots ?? j.occupiedSlots ?? 0),
           pricePerTask: Number(j.price_per_task ?? j.pricePerTask ?? 0),
           status: j.status || 'pending',
+          imageUrl: extractJobImageUrl(j) || '',
           rejectionReason: j.rejection_reason || j.rejectionReason,
           createdAt: j.created_at || j.createdAt,
         }));
@@ -404,21 +411,23 @@ export default function MyJobsPage() {
     }
   };
 
-  const handleReject = async (subId: string) => {
+  const handleRejectClick = (sub: any) => {
     if (!selectedJob) return;
-    const sub = submissions.find(s => s.id === subId);
     if (sub && sub.status !== 'pending') {
       toast.error("This submission has already been reviewed!");
       return;
     }
-    const reason = window.prompt('Please provide a brief reason for rejection:');
-    if (reason === null) return; // cancelled
-    
+    setRejectingSub(sub);
+  };
+
+  const handleConfirmReject = async (reason: string) => {
+    if (!selectedJob || !rejectingSub) return;
+    const subId = rejectingSub.id;
     setActionLoading(subId);
     try {
       await rejectSubmission(subId, selectedJob.id, reason);
-      toast.success('Submission rejected and slot reopened');
-      setSubmissions(prev => prev.map(s => s.id === subId ? { ...s, status: 'rejected' } : s));
+      toast.success('কাজের সাবমিশন রিজেক্ট করা হয়েছে!');
+      setSubmissions(prev => prev.map(s => s.id === subId ? { ...s, status: 'rejected', rejection_reason: reason } : s));
       setPendingCounts(prev => {
         const nextCount = Math.max(0, (prev[selectedJob.id] || 1) - 1);
         const next = { ...prev };
@@ -429,6 +438,7 @@ export default function MyJobsPage() {
         }
         return next;
       });
+      setRejectingSub(null);
       fetchSubmissionsForJob(selectedJob.id);
       fetchMyJobs();
     } catch (err: any) {
@@ -480,44 +490,65 @@ export default function MyJobsPage() {
             const pendingCount = isEligibleForReview ? (pendingCounts[job.id] || 0) : 0;
             return (
               <div key={job.id} className="bg-white dark:bg-[#130b2c]/85 dark:backdrop-blur-md rounded-2xl shadow-sm dark:shadow-lg dark:shadow-purple-950/40 border border-slate-200 dark:border-purple-500/20 p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 transition-all hover:border-purple-300 dark:hover:border-amber-400/40">
-                <div>
-                  <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-amber-300 border border-purple-200 dark:border-purple-800/50 text-xs font-mono font-bold">
-                      Job ID: #{formatJobDisplayId(job.display_id || job.displayId, job.id)}
-                    </span>
-                    {pendingCount > 0 && (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/60 text-xs font-bold shadow-xs">
-                        <span className="relative flex h-2 w-2">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
-                        </span>
-                        Pending for Review ({pendingCount})
+                <div className="flex items-start gap-3.5 min-w-0">
+                  {job.imageUrl && (
+                    <div 
+                      onClick={() => setPreviewModalImg(job.imageUrl)}
+                      className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden border border-purple-200 dark:border-purple-500/30 bg-slate-100 dark:bg-[#080412] flex-shrink-0 cursor-pointer group relative shadow-xs"
+                      title="Click to view full image"
+                    >
+                      <img 
+                        src={job.imageUrl} 
+                        alt={job.title} 
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }}
+                      />
+                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                        <Eye className="w-4 h-4 text-amber-300" />
+                      </div>
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-amber-300 border border-purple-200 dark:border-purple-800/50 text-xs font-mono font-bold">
+                        Job ID: #{formatJobDisplayId(job.display_id || job.displayId, job.id)}
                       </span>
+                      {pendingCount > 0 && (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/60 text-xs font-bold shadow-xs">
+                          <span className="relative flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                          </span>
+                          Pending for Review ({pendingCount})
+                        </span>
+                      )}
+                    </div>
+                    <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-1 truncate">{job.title}</h3>
+                    <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600 dark:text-purple-200/80 font-medium">
+                      <span className="inline-flex items-center">
+                        <Users className="w-4 h-4 mr-1 text-purple-600 dark:text-amber-400" />
+                        {job.occupiedSlots}/{job.totalSlots} Slots
+                      </span>
+                      <span className="hidden sm:inline text-slate-300 dark:text-purple-400/50">•</span>
+                      <span className="font-black text-slate-900 dark:bg-gradient-to-r dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 dark:bg-clip-text dark:text-transparent">${job.pricePerTask.toFixed(2)}/task</span>
+                      <span className="hidden sm:inline text-slate-300 dark:text-purple-400/50">•</span>
+                      <span className={`px-2.5 py-0.5 rounded-md text-xs font-bold tracking-wide border uppercase ${
+                        job.status === 'active' ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60' :
+                        job.status === 'pending' ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60' :
+                        job.status === 'completed' ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/60' :
+                        'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60'
+                      }`}>
+                        {job.status}
+                      </span>
+                    </div>
+                    {job.status === 'rejected' && job.rejectionReason && (
+                      <p className="text-xs text-red-600 dark:text-red-400 mt-2 font-medium">
+                        Reason for rejection: {job.rejectionReason} (Budget refunded)
+                      </p>
                     )}
                   </div>
-                  <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-1">{job.title}</h3>
-                  <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600 dark:text-purple-200/80 font-medium">
-                    <span className="inline-flex items-center">
-                      <Users className="w-4 h-4 mr-1 text-purple-600 dark:text-amber-400" />
-                      {job.occupiedSlots}/{job.totalSlots} Slots
-                    </span>
-                    <span className="hidden sm:inline text-slate-300 dark:text-purple-400/50">•</span>
-                    <span className="font-black text-slate-900 dark:bg-gradient-to-r dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 dark:bg-clip-text dark:text-transparent">${job.pricePerTask.toFixed(2)}/task</span>
-                    <span className="hidden sm:inline text-slate-300 dark:text-purple-400/50">•</span>
-                    <span className={`px-2.5 py-0.5 rounded-md text-xs font-bold tracking-wide border uppercase ${
-                      job.status === 'active' ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60' :
-                      job.status === 'pending' ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60' :
-                      job.status === 'completed' ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/60' :
-                      'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60'
-                    }`}>
-                      {job.status}
-                    </span>
-                  </div>
-                  {job.status === 'rejected' && job.rejectionReason && (
-                    <p className="text-xs text-red-600 dark:text-red-400 mt-2 font-medium">
-                      Reason for rejection: {job.rejectionReason} (Budget refunded)
-                    </p>
-                  )}
                 </div>
                 
                 <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -726,7 +757,7 @@ export default function MyJobsPage() {
                       <div className="flex gap-3 justify-end pt-2">
                         <button
                           disabled={actionLoading === sub.id}
-                          onClick={() => handleReject(sub.id)}
+                          onClick={() => handleRejectClick(sub)}
                           className="inline-flex items-center px-4 py-2 border border-red-200 dark:border-red-500/40 text-red-600 dark:text-red-400 rounded-xl text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors disabled:opacity-50 bg-white dark:bg-transparent cursor-pointer"
                         >
                           <XCircle className="w-4 h-4 mr-1.5" />
@@ -781,6 +812,14 @@ export default function MyJobsPage() {
         </div>,
         document.body
       )}
+      {/* Rejection Reason Modal */}
+      <RejectionReasonModal
+        isOpen={Boolean(rejectingSub)}
+        onClose={() => setRejectingSub(null)}
+        onConfirm={handleConfirmReject}
+        isProcessing={actionLoading === rejectingSub?.id}
+        jobTitle={selectedJob?.title}
+      />
     </div>
   );
 }
