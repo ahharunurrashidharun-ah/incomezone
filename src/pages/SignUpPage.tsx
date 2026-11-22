@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { supabase } from '../lib/supabaseClient';
+import { supabase, formatUserDisplayId } from '../lib/supabaseClient';
 import { useAuth, saveStoredSession, clearStoredSession } from '../contexts/AuthContext';
 import { 
   isUserDeleted, 
@@ -16,6 +16,7 @@ import {
 } from '../lib/localFallbackStore';
 import { sendNewUserAlert } from '../utils/telegramNotifier';
 import { checkIsAdmin } from '../lib/adminConfig';
+import BrandLogo from '../components/BrandLogo';
 import toast from 'react-hot-toast';
 import { Eye, EyeOff, Mail, Lock, User, ArrowRight, AlertCircle, CheckCircle2, RefreshCw, ShieldAlert, Wifi } from 'lucide-react';
 
@@ -279,14 +280,18 @@ export default function SignUpPage() {
         });
 
         // Instant Telegram Alert: Pending Duplicate IP User
-        sendNewUserAlert({
-          email: cleanEmail,
-          name: cleanName,
-          username: cleanUsername,
-          id: assignedUserId,
-          ip: clientIp,
-          isPending: true,
-        });
+        try {
+          await sendNewUserAlert({
+            email: cleanEmail,
+            name: cleanName,
+            username: cleanUsername,
+            id: assignedUserId,
+            displayId: formatUserDisplayId(null, assignedUserId),
+            role: 'user',
+            ip: clientIp,
+            isPending: true,
+          });
+        } catch {}
 
         toast.error('একই আইপি থাকায় অ্যাকাউন্টটি পেন্ডিং অবস্থায় রাখা হয়েছে!');
         return;
@@ -309,14 +314,18 @@ export default function SignUpPage() {
 
       // Instant Telegram Alert: New Active User Registered
       if (!isAdminEmail) {
-        sendNewUserAlert({
-          email: cleanEmail,
-          name: cleanName,
-          username: cleanUsername,
-          id: assignedUserId,
-          ip: clientIp,
-          isPending: false,
-        });
+        try {
+          await sendNewUserAlert({
+            email: cleanEmail,
+            name: cleanName,
+            username: cleanUsername,
+            id: assignedUserId,
+            displayId: formatUserDisplayId(null, assignedUserId),
+            role: resolvedRole,
+            ip: clientIp,
+            isPending: false,
+          });
+        } catch {}
       }
 
       // Update in users table
@@ -422,13 +431,8 @@ export default function SignUpPage() {
       
       {/* Top Navbar */}
       <nav className="absolute top-0 w-full p-6 sm:p-8 flex justify-center sm:justify-start z-20">
-        <Link to="/" className="text-2xl font-black tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
-           <div className="w-8 h-8 rounded-lg bg-purple-600 dark:bg-gradient-to-tr dark:from-amber-400 dark:to-yellow-500 flex items-center justify-center text-white dark:text-slate-950 shadow-md font-black text-sm">
-             IZ
-           </div>
-           <span>
-             Income<span className="text-purple-600 dark:bg-gradient-to-r dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 dark:bg-clip-text dark:text-transparent">Zone</span>
-           </span>
+        <Link to="/" className="flex items-center gap-2 hover:opacity-95 transition-opacity">
+          <BrandLogo size="md" />
         </Link>
       </nav>
 

@@ -24,6 +24,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase, formatUserDisplayId } from '../lib/supabaseClient';
 import { checkIsAdmin } from '../lib/adminConfig';
 import ThemeToggle from '../components/ThemeToggle';
+import BrandLogo from '../components/BrandLogo';
 import {
   getLocalNotifications,
   saveLocalNotification,
@@ -384,13 +385,8 @@ export default function DashboardLayout() {
         `}
       >
         <div className="h-20 flex items-center justify-between px-6 border-b border-slate-200 dark:border-purple-900/30 bg-slate-50 dark:bg-[#090514]">
-          <Link to="/jobs" className="text-2xl font-black tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-purple-600 dark:bg-gradient-to-tr dark:from-amber-400 dark:to-yellow-500 flex items-center justify-center text-white dark:text-slate-950 shadow-md font-black text-sm">
-              IZ
-            </div>
-            <span>
-              Income<span className="text-purple-600 dark:bg-gradient-to-r dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 dark:bg-clip-text dark:text-transparent">Zone</span>
-            </span>
+          <Link to="/jobs" className="flex items-center gap-2 hover:opacity-95 transition-opacity">
+            <BrandLogo size="md" />
           </Link>
           <button 
             className="p-2 rounded-xl text-slate-500 dark:text-purple-300 hover:bg-slate-100 dark:hover:bg-purple-900/50 hover:text-slate-900 dark:hover:text-white transition-colors lg:hidden border border-transparent dark:hover:border-purple-500/30"

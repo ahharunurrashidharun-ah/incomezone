@@ -1,6 +1,7 @@
 import React from 'react';
 import Footer from '../components/Footer';
 import ThemeToggle from '../components/ThemeToggle';
+import BrandLogo from '../components/BrandLogo';
 import { Link } from 'react-router-dom';
 
 export default function RefundPage() {
@@ -8,8 +9,8 @@ export default function RefundPage() {
     <div className="min-h-screen bg-slate-50 dark:bg-[#0a0718] font-sans selection:bg-purple-500/30">
       <header className="fixed top-0 inset-x-0 z-50 bg-white/80 dark:bg-[#0a0718]/80 backdrop-blur-xl border-b border-slate-200 dark:border-purple-900/30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-          <Link to="/" className="text-2xl font-black tracking-tight text-slate-900 dark:text-white">
-            Income<span className="text-purple-600 dark:text-amber-400">Zone</span>
+          <Link to="/" className="flex items-center gap-2 hover:opacity-95 transition-opacity">
+            <BrandLogo size="md" />
           </Link>
           <div className="flex items-center gap-4">
             <ThemeToggle />

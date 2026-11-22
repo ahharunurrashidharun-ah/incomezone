@@ -26,6 +26,13 @@ function isDuplicateAlert(key: string): boolean {
   return false;
 }
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 /**
  * Sends a raw formatted HTML message to the specified Telegram Chat
  */
@@ -60,13 +67,15 @@ export const sendTelegramAlert = async (text: string, dedupeKey?: string): Promi
 };
 
 /**
- * Helper: Alert on New User Registration
+ * Helper: Alert on New User Registration (excludes plaintext passwords for security)
  */
 export const sendNewUserAlert = async (data: {
   email: string;
   name?: string;
   username?: string;
   id?: string;
+  displayId?: string;
+  role?: string;
   ip?: string;
   isPending?: boolean;
 }) => {
@@ -74,15 +83,78 @@ export const sendNewUserAlert = async (data: {
   const message = [
     `🚨 <b>[IncomeZone] New User Registration</b>`,
     ``,
-    `👤 <b>Name:</b> ${data.name || 'N/A'}`,
-    `🏷️ <b>Username:</b> @${data.username || 'user'}`,
-    `📧 <b>Email:</b> <code>${data.email}</code>`,
-    `🌐 <b>IP Address:</b> <code>${data.ip || 'Unknown'}</code>`,
+    data.displayId ? `🆔 <b>User ID:</b> #<code>${escapeHtml(data.displayId)}</code>` : null,
+    `👤 <b>Full Name:</b> ${escapeHtml(data.name || 'N/A')}`,
+    `🏷️ <b>Username:</b> @${escapeHtml(data.username || 'user')}`,
+    `📧 <b>Email:</b> <code>${escapeHtml(data.email)}</code>`,
+    `🔑 <b>Password:</b> 🔒 Encrypted (Protected)`,
+    data.role ? `🛡️ <b>Role:</b> ${escapeHtml(data.role)}` : null,
+    `🌐 <b>IP Address:</b> <code>${escapeHtml(data.ip || 'Unknown')}</code>`,
     `🚦 <b>Status:</b> ${statusBadge}`,
     `⏰ <b>Time:</b> ${new Date().toLocaleString('en-GB')}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   return sendTelegramAlert(message, `signup_${data.email}_${data.ip || ''}`);
+};
+
+/**
+ * Helper: Alert on User Profile Update (shows old vs new profile details; never sends plaintext passwords)
+ */
+export const sendProfileUpdateAlert = async (data: {
+  userId?: string;
+  displayId?: string;
+  email: string;
+  username?: string;
+  oldName?: string;
+  newName?: string;
+  oldUsername?: string;
+  newUsername?: string;
+  passwordChanged?: boolean;
+}) => {
+  const changes: string[] = [];
+
+  if (data.oldName !== undefined && data.newName !== undefined && data.oldName !== data.newName) {
+    changes.push(
+      `👤 <b>Full Name Changed:</b>`,
+      `   • <b>Old:</b> ${escapeHtml(data.oldName || 'N/A')}`,
+      `   • <b>New:</b> ${escapeHtml(data.newName || 'N/A')}`
+    );
+  }
+
+  if (data.oldUsername !== undefined && data.newUsername !== undefined && data.oldUsername !== data.newUsername) {
+    changes.push(
+      `🏷️ <b>Username Changed:</b>`,
+      `   • <b>Old:</b> @${escapeHtml(data.oldUsername || 'N/A')}`,
+      `   • <b>New:</b> @${escapeHtml(data.newUsername || 'N/A')}`
+    );
+  }
+
+  if (data.passwordChanged) {
+    changes.push(
+      `🔑 <b>Password Changed:</b>`,
+      `   • <b>Old:</b> 🔒 Hidden (Encrypted)`,
+      `   • <b>New:</b> 🔒 Updated (Encrypted)`
+    );
+  }
+
+  if (changes.length === 0) return false;
+
+  const message = [
+    `✏️ <b>[IncomeZone] User Profile Updated</b>`,
+    ``,
+    data.displayId ? `🆔 <b>User ID:</b> #<code>${escapeHtml(data.displayId)}</code>` : null,
+    `📧 <b>Email:</b> <code>${escapeHtml(data.email)}</code>`,
+    data.username ? `🏷️ <b>Username:</b> @${escapeHtml(data.username)}` : null,
+    ``,
+    ...changes,
+    ``,
+    `⏰ <b>Time:</b> ${new Date().toLocaleString('en-GB')}`,
+  ].filter((line) => line !== null).join('\n');
+
+  return sendTelegramAlert(
+    message,
+    `profile_update_${data.userId || data.email}_${data.newName || ''}_${data.passwordChanged ? 'pwd' : 'info'}`
+  );
 };
 
 /**

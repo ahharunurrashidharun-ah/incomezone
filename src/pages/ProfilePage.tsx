@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, formatUserDisplayId } from '../lib/supabaseClient';
+import { sendProfileUpdateAlert } from '../utils/telegramNotifier';
 import { User, Mail, Lock, CheckCircle, AlertCircle } from 'lucide-react';
 
 export default function ProfilePage() {
@@ -33,6 +34,10 @@ export default function ProfilePage() {
     setSuccess('');
 
     try {
+      const oldName = (profile?.name || user?.user_metadata?.name || '').trim();
+      const trimmedName = name.trim();
+      const passwordChanged = Boolean(newPassword);
+
       // If changing password, validate first
       if (newPassword) {
         if (newPassword !== confirmPassword) {
@@ -51,18 +56,32 @@ export default function ProfilePage() {
 
       // Update in Auth metadata
       await supabase.auth.updateUser({
-        data: { name, full_name: name, username },
+        data: { name: trimmedName, full_name: trimmedName, username },
       });
       
       // Update in public.users table
       const userId = user.uid || user.id;
       const { error: dbError } = await supabase
         .from('users')
-        .update({ name, username })
+        .update({ name: trimmedName, username })
         .eq('id', userId);
 
       if (dbError) {
         console.warn('Database user update warning:', dbError);
+      }
+
+      if (trimmedName !== oldName || passwordChanged) {
+        try {
+          await sendProfileUpdateAlert({
+            userId,
+            displayId: formatUserDisplayId(profile?.display_id || profile?.displayId || (user as any)?.display_id, userId),
+            email: email || user.email || '',
+            username,
+            oldName,
+            newName: trimmedName,
+            passwordChanged,
+          });
+        } catch {}
       }
 
       await refreshProfile();

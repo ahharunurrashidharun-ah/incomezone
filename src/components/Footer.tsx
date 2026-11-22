@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
+import BrandLogo from './BrandLogo';
 
 export default function Footer() {
   const [links, setLinks] = useState({
@@ -44,9 +45,9 @@ export default function Footer() {
     <footer className="bg-slate-900 text-slate-300 dark:bg-[#080412] dark:text-purple-200/70 pt-16 pb-8 border-t border-slate-800 dark:border-purple-900/30">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 grid grid-cols-1 md:grid-cols-4 gap-8 mb-12">
         <div>
-          <span className="text-2xl font-black tracking-tight text-white block mb-4">
-            Income<span className="text-purple-600 dark:text-amber-400">Zone</span>
-          </span>
+          <Link to="/" className="inline-block mb-4 hover:opacity-95 transition-opacity">
+            <BrandLogo size="lg" />
+          </Link>
           <p className="text-sm font-medium text-slate-400 dark:text-purple-300/60 max-w-xs leading-relaxed">
             The premier global micro-task platform empowering digital workers and providing targeted campaign reach.
           </p>

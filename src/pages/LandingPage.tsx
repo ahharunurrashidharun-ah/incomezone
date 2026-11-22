@@ -23,6 +23,7 @@ import {
 import LiveStats from '../components/LiveStats';
 import ThemeToggle from '../components/ThemeToggle';
 import Footer from '../components/Footer';
+import BrandLogo from '../components/BrandLogo';
 import { supabase } from '../lib/supabaseClient';
 import { getLocalJobs, isTableMissingError } from '../lib/localFallbackStore';
 import { useAuth } from '../contexts/AuthContext';
@@ -112,13 +113,8 @@ export default function LandingPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-20">
             {/* Logo */}
-            <Link to="/" className="text-2xl font-black tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-600 dark:from-amber-400 dark:to-yellow-500 flex items-center justify-center text-white dark:text-slate-950 shadow-md shadow-purple-600/20 dark:shadow-amber-500/20 font-black">
-                IZ
-              </div>
-              <span>
-                Income<span className="bg-gradient-to-r from-purple-600 to-indigo-600 dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 bg-clip-text text-transparent">Zone</span>
-              </span>
+            <Link to="/" className="flex items-center gap-2 hover:opacity-95 transition-opacity">
+              <BrandLogo size="md" />
             </Link>
 
             {/* Nav Links */}

@@ -13,6 +13,7 @@ import {
   syncDeletedUsersWithRemote,
 } from '../lib/localFallbackStore';
 import AccountStatusModal, { AccountStatusType } from '../components/AccountStatusModal';
+import BrandLogo from '../components/BrandLogo';
 import toast from 'react-hot-toast';
 import { Eye, EyeOff, Mail, Lock, ArrowRight, AlertCircle, RefreshCw } from 'lucide-react';
 
@@ -476,13 +477,8 @@ export default function LoginPage() {
 
       {/* Top Navbar */}
       <nav className="absolute top-0 w-full p-6 sm:p-8 flex justify-between items-center z-20">
-        <Link to="/" className="text-2xl font-black tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-purple-600 dark:bg-gradient-to-tr dark:from-amber-400 dark:to-yellow-500 flex items-center justify-center text-white dark:text-slate-950 shadow-md font-black text-sm">
-            IZ
-          </div>
-          <span>
-            Income<span className="text-purple-600 dark:bg-gradient-to-r dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 dark:bg-clip-text dark:text-transparent">Zone</span>
-          </span>
+        <Link to="/" className="flex items-center gap-2 hover:opacity-95 transition-opacity">
+          <BrandLogo size="md" />
         </Link>
       </nav>
 

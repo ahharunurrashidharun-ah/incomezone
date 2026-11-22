@@ -22,6 +22,7 @@ import { supabase } from '../../lib/supabaseClient';
 import { checkIsAdmin } from '../../lib/adminConfig';
 import NotificationsLoader from '../../components/NotificationsLoader';
 import ThemeToggle from '../../components/ThemeToggle';
+import BrandLogo from '../../components/BrandLogo';
 import { fetchLiveAdminStats } from '../../lib/adminStats';
 import toast from 'react-hot-toast';
 
@@ -164,9 +165,12 @@ export default function AdminLayout() {
         flex flex-col shadow-xl dark:shadow-2xl dark:shadow-purple-900/20
       `}>
         <div className="p-6 flex items-center justify-between border-b border-slate-200 dark:border-purple-900/30 bg-slate-50/50 dark:bg-[#090514]/50 h-20">
-          <div>
-            <h1 className="text-xl font-black text-slate-900 dark:text-white tracking-tight">Admin<span className="text-purple-600 dark:bg-gradient-to-r dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 dark:bg-clip-text dark:text-transparent">Panel</span></h1>
-            <p className="text-xs text-purple-600 dark:text-purple-400 font-bold tracking-widest mt-1">INCOME ZONE</p>
+          <div className="flex items-center gap-3">
+            <BrandLogo size="sm" />
+            <div>
+              <h1 className="text-lg font-black text-slate-900 dark:text-white tracking-tight leading-none">Admin<span className="text-purple-600 dark:bg-gradient-to-r dark:from-amber-300 dark:via-yellow-400 dark:to-amber-500 dark:bg-clip-text dark:text-transparent">Panel</span></h1>
+              <p className="text-[10px] text-purple-600 dark:text-purple-400 font-bold tracking-widest mt-1">INCOME ZONE</p>
+            </div>
           </div>
           <button 
             onClick={() => setSidebarOpen(false)}

@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import ThemeToggle from '../components/ThemeToggle';
+import BrandLogo from '../components/BrandLogo';
 import toast from 'react-hot-toast';
 
 import blogAccountGuideImg from '../assets/images/blog_account_guide_1790427456890.jpg';
@@ -199,15 +200,10 @@ export default function BlogPage() {
             >
               <ArrowLeft className="w-5 h-5 group-hover:-translate-x-0.5 transition-transform" />
             </button>
-            <Link to="/" className="flex items-center gap-2.5 group">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-400 to-yellow-500 flex items-center justify-center text-slate-950 font-black shadow-md shadow-amber-500/20 group-hover:scale-105 transition-transform">
-                <BookOpen className="w-5 h-5" />
-              </div>
+            <Link to="/" className="flex items-center gap-2.5 group hover:opacity-95 transition-opacity">
+              <BrandLogo size="sm" />
               <div className="leading-tight">
-                <span className="text-lg font-black tracking-tight text-slate-900 dark:text-white group-hover:text-purple-600 dark:group-hover:text-amber-300 transition-colors">
-                  Income<span className="text-amber-500 dark:text-amber-400">Zone</span>
-                </span>
-                <span className="block text-[10px] font-bold uppercase tracking-widest text-purple-600 dark:text-purple-400">
+                <span className="block text-[10px] font-bold uppercase tracking-widest text-purple-600 dark:text-amber-400">
                   Blog & Guide
                 </span>
               </div>
