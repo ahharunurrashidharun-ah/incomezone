@@ -101,7 +101,7 @@ export default function PostedAdPage() {
 
   useEffect(() => {
     fetchAds();
-  }, [user]);
+  }, [user?.uid]);
 
   const handleDelete = async (ad: Ad) => {
     if (!window.confirm('Are you sure you want to delete this ad permanently?')) return;

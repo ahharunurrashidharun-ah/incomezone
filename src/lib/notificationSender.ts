@@ -53,63 +53,21 @@ export async function sendEmailAlert(alert: EmailAlertPayload): Promise<boolean>
     <p style="color: #64748b; font-size: 12px; margin: 0;">IncomeZone Real-time Alert System &bull; Destination: ${TARGET_EMAIL}</p>
   </div>`;
 
-  let sent = false;
-
-  // 1. Try Supabase Auth Admin sendRawEmail if available (as requested by user)
+  // Try optional custom RPC send_email_alert if registered in Supabase SQL editor
+  // (Never call supabase.auth.signInWithOtp for notifications — it triggers Auth 429 rate-limit loops)
   try {
-    const adminAuth = (supabase.auth as any)?.admin;
-    if (adminAuth && typeof adminAuth.sendRawEmail === 'function') {
-      const { error } = await adminAuth.sendRawEmail({
-        from: SENDER_EMAIL,
-        to: TARGET_EMAIL,
-        subject: alert.subject,
-        html: htmlContent,
-      });
-      if (!error) {
-        sent = true;
-      }
+    const { error: rpcError } = await supabase.rpc('send_email_alert', {
+      to_email: TARGET_EMAIL,
+      from_email: SENDER_EMAIL,
+      subject: alert.subject,
+      html_content: htmlContent,
+    });
+    if (!rpcError) {
+      return true;
     }
-  } catch (err) {
-    console.warn('sendRawEmail attempt notice:', err);
-  }
+  } catch {}
 
-  // 2. Try Supabase native magic link OTP mailer trigger to target address
-  if (!sent) {
-    try {
-      const { error: otpError } = await supabase.auth.signInWithOtp({
-        email: TARGET_EMAIL,
-        options: {
-          data: {
-            subject: alert.subject,
-            notification_message: alert.message,
-            alert_type: alert.type || 'system_event',
-          },
-        },
-      });
-      if (!otpError) {
-        sent = true;
-      }
-    } catch (otpCatch) {
-      console.warn('Supabase mailer trigger notice:', otpCatch);
-    }
-  }
-
-  // 3. Try custom RPC send_email_alert or send_email if registered in Supabase SQL editor
-  if (!sent) {
-    try {
-      const { error: rpcError } = await supabase.rpc('send_email_alert', {
-        to_email: TARGET_EMAIL,
-        from_email: SENDER_EMAIL,
-        subject: alert.subject,
-        html_content: htmlContent,
-      });
-      if (!rpcError) {
-        sent = true;
-      }
-    } catch {}
-  }
-
-  return sent;
+  return false;
 }
 
 /**

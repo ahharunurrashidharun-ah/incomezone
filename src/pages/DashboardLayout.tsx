@@ -48,13 +48,23 @@ const SIDEBAR_LINKS = [
 export default function DashboardLayout() {
   const { user, profile, logout } = useAuth();
   const [userData, setUserData] = useState<any>(profile || null);
+  const profileRef = React.useRef(profile);
+  const fetchInFlightRef = React.useRef(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
+  useEffect(() => {
+    profileRef.current = profile;
+    if (profile) {
+      setUserData((prev: any) => ({ ...prev, ...profile }));
+    }
+  }, [profile]);
+
   const fetchUserData = async () => {
-    if (!user?.uid) return;
+    if (!user?.uid || fetchInFlightRef.current) return;
+    fetchInFlightRef.current = true;
     try {
       const { data, error } = await supabase
         .from('users')
@@ -72,9 +82,10 @@ export default function DashboardLayout() {
           role: data.role || 'user',
           ...data
         }));
+        const latestProfile = profileRef.current;
         if (
-          profile &&
-          (profile.depositBalance !== depBal || profile.earningBalance !== earnBal)
+          latestProfile &&
+          (latestProfile.depositBalance !== depBal || latestProfile.earningBalance !== earnBal)
         ) {
           window.dispatchEvent(new CustomEvent('iz_balance_updated', {
             detail: {
@@ -85,11 +96,13 @@ export default function DashboardLayout() {
             }
           }));
         }
-      } else if (profile) {
-        setUserData(profile);
+      } else if (profileRef.current) {
+        setUserData(profileRef.current);
       }
     } catch (err) {
       console.error("Error fetching user data:", err);
+    } finally {
+      fetchInFlightRef.current = false;
     }
   };
 
@@ -102,10 +115,27 @@ export default function DashboardLayout() {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'users', filter: `id=eq.${user.uid}` }, () => {
           fetchUserData();
         })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'submissions', filter: `worker_id=eq.${user.uid}` }, () => {
+          fetchUserData();
+        })
         .subscribe();
+
+      const handleRefresh = () => fetchUserData();
+      const handleVisibility = () => {
+        if (document.visibilityState === 'visible') fetchUserData();
+      };
+
+      window.addEventListener('submission_updated', handleRefresh);
+      window.addEventListener('iz_users_updated', handleRefresh);
+      window.addEventListener('focus', handleRefresh);
+      document.addEventListener('visibilitychange', handleVisibility);
 
       return () => {
         supabase.removeChannel(channel);
+        window.removeEventListener('submission_updated', handleRefresh);
+        window.removeEventListener('iz_users_updated', handleRefresh);
+        window.removeEventListener('focus', handleRefresh);
+        document.removeEventListener('visibilitychange', handleVisibility);
       };
     }
   }, [user?.uid]);

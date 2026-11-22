@@ -24,16 +24,21 @@ export default function NotificationsLoader() {
     isProcessingRef.current = true;
 
     try {
-      // 1. Process local pending emails first if any are unsent
+      // 1. Process local pending emails once without infinite retry spam
       const localPending = getLocalPendingEmails().filter((item) => !item.sent);
       for (const localAlert of localPending.slice(0, BATCH_LIMIT)) {
+        const localKey = `local_${localAlert.id}`;
+        const localAttempts = failureCountRef.current.get(localKey) || 0;
+        if (localAttempts >= 1) continue;
         try {
           const success = await sendEmailAlert(localAlert);
           if (success && localAlert.id) {
             markLocalPendingEmailSent(localAlert.id);
+          } else {
+            failureCountRef.current.set(localKey, localAttempts + 1);
           }
-        } catch (err) {
-          console.warn('Local pending email dispatch attempt note:', err);
+        } catch {
+          failureCountRef.current.set(localKey, localAttempts + 1);
         }
       }
 
@@ -45,18 +50,14 @@ export default function NotificationsLoader() {
         .order('created_at', { ascending: true })
         .limit(BATCH_LIMIT);
 
-      if (error) {
+      if (error || !unsentNotifications || unsentNotifications.length === 0) {
         return;
       }
 
-      if (!unsentNotifications || unsentNotifications.length === 0) {
-        return;
-      }
-
-      // 3. Loop through each unsent notification and dispatch email
+      // 3. Dispatch each unsent notification at most once per session if no RPC is active
       for (const notif of unsentNotifications) {
         const attempts = failureCountRef.current.get(notif.id) || 0;
-        if (attempts >= 5) {
+        if (attempts >= 1) {
           continue;
         }
 
@@ -69,8 +70,6 @@ export default function NotificationsLoader() {
           };
 
           const success = await sendEmailAlert(payload);
-
-          // Mark notification as sent in Supabase database to prevent resending
           if (success) {
             const { error: updateError } = await supabase
               .from('email_notifications')
@@ -80,10 +79,11 @@ export default function NotificationsLoader() {
             if (!updateError) {
               failureCountRef.current.delete(notif.id);
             }
+          } else {
+            failureCountRef.current.set(notif.id, attempts + 1);
           }
-        } catch (err) {
+        } catch {
           failureCountRef.current.set(notif.id, attempts + 1);
-          console.error('Failed to send email alert:', err);
         }
       }
     } catch (globalErr) {

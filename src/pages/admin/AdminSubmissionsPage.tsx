@@ -9,6 +9,7 @@ import {
   getLocalJobs,
   isTableMissingError,
 } from '../../lib/localFallbackStore';
+import { parseProofScreenshots } from '../../lib/jobImages';
 
 const FallbackImage = ({ src, alt, className }: { src: string, alt: string, className: string }) => {
   const [hasError, setHasError] = useState(false);
@@ -98,8 +99,9 @@ export default function AdminSubmissionsPage() {
         } catch {}
       } else if (subsErr && isTableMissingError(subsErr)) {
         rawSubs = getLocalSubmissions();
-      } else {
-        rawSubs = getLocalSubmissions();
+      } else if (subsErr) {
+        setError(`সাবমিশন লোড করতে সমস্যা হয়েছে: ${subsErr.message}`);
+        rawSubs = [];
       }
 
       // Step 2: Extract unique Job IDs and Worker IDs
@@ -160,29 +162,18 @@ export default function AdminSubmissionsPage() {
               display_id: formatJobDisplayId(null, jobId),
             };
 
-        // Worker object: strictly use display_id from users table, no random fallback!
         const workerObj = matchedWorker
           ? {
               id: matchedWorker.id,
-              display_id: matchedWorker.display_id ?? matchedWorker.displayId ?? null,
+              display_id: matchedWorker.display_id ?? matchedWorker.displayId ?? sub.worker_display_id ?? null,
             }
           : {
               id: workerId,
-              display_id: null,
+              display_id: sub.worker_display_id ?? null,
             };
 
-        const rawUrls =
-          sub.proof_screenshot_urls ||
-          sub.proofScreenshotUrls ||
-          (sub.proof_screenshot_url ? [sub.proof_screenshot_url] : []) ||
-          (sub.proofScreenshotUrl ? [sub.proofScreenshotUrl] : []) ||
-          (sub.screenshotUrl ? [sub.screenshotUrl] : []);
-
-        const screenshotUrls = Array.isArray(rawUrls)
-          ? rawUrls.filter(Boolean)
-          : (typeof rawUrls === 'string' && rawUrls ? [rawUrls] : []);
-
-        const singleUrl = sub.proof_screenshot_url || sub.proofScreenshotUrl || sub.screenshotUrl || (screenshotUrls[0] || '');
+        const screenshotUrls = parseProofScreenshots(sub);
+        const singleUrl = screenshotUrls[0] || '';
 
         return {
           ...sub,
@@ -191,7 +182,7 @@ export default function AdminSubmissionsPage() {
           workerId: workerId,
           proof: sub.proof_text || sub.proofText || sub.proof || '',
           screenshotUrl: singleUrl,
-          screenshotUrls: screenshotUrls.length > 0 ? screenshotUrls : (singleUrl ? [singleUrl] : []),
+          screenshotUrls: screenshotUrls,
           status: sub.status || 'pending',
           createdAt: sub.created_at || sub.submittedAt || sub.createdAt,
           job: jobObj,
@@ -205,9 +196,8 @@ export default function AdminSubmissionsPage() {
       const localJobs = getLocalJobs();
       const formatted = localSubs.map((s: any) => {
         const job = localJobs.find((j) => j.id === s.job_id) as any || {};
-        const rawUrls = s.proof_screenshot_urls || (s.proof_screenshot_url ? [s.proof_screenshot_url] : []);
-        const screenshotUrls = Array.isArray(rawUrls) ? rawUrls.filter(Boolean) : [];
-        const singleUrl = s.proof_screenshot_url || (screenshotUrls[0] || '');
+        const screenshotUrls = parseProofScreenshots(s);
+        const singleUrl = screenshotUrls[0] || '';
 
         return {
           ...s,
@@ -216,7 +206,7 @@ export default function AdminSubmissionsPage() {
           workerId: s.worker_id || s.user_id,
           proof: s.proof_text || s.proof || '',
           screenshotUrl: singleUrl,
-          screenshotUrls: screenshotUrls.length > 0 ? screenshotUrls : (singleUrl ? [singleUrl] : []),
+          screenshotUrls: screenshotUrls,
           status: s.status || 'pending',
           createdAt: s.created_at,
           job: {
@@ -246,7 +236,7 @@ export default function AdminSubmissionsPage() {
     setActionLoading(submission.id);
     try {
       await approveSubmission(submission.id, submission.jobId || submission.job_id, submission.workerId || submission.worker_id);
-      setSubmissions(prev => prev.map(s => s.id === submission.id ? { ...s, status: 'approved', reviewed_at: new Date().toISOString() } : s));
+      setSubmissions(prev => prev.map(s => s.id === submission.id ? { ...s, status: 'approved', reviewed_at: new Date().toISOString(), proof_screenshot_url: null, proof_file_url: null, screenshotUrl: '', screenshotUrls: [] } : s));
       toast.success("কাজটি অ্যাপ্রুভ করা হয়েছে!");
       await fetchSubmissions();
     } catch (err: any) {
@@ -267,7 +257,7 @@ export default function AdminSubmissionsPage() {
     setActionLoading(submission.id);
     try {
       await rejectSubmission(submission.id, submission.jobId || submission.job_id, reason);
-      setSubmissions(prev => prev.map(s => s.id === submission.id ? { ...s, status: 'rejected', rejection_reason: reason, reviewed_at: new Date().toISOString() } : s));
+      setSubmissions(prev => prev.map(s => s.id === submission.id ? { ...s, status: 'rejected', rejection_reason: reason, reviewed_at: new Date().toISOString(), proof_screenshot_url: null, proof_file_url: null, screenshotUrl: '', screenshotUrls: [] } : s));
       setRejectingSub(null);
       toast.success("কাজটি রিজেক্ট করা হয়েছে!");
       await fetchSubmissions();

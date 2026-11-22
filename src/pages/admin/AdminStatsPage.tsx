@@ -54,7 +54,12 @@ export default function AdminStatsPage() {
   const [pendingUsersList, setPendingUsersList] = useState<any[]>([]);
   const [actionUserId, setActionUserId] = useState<string | null>(null);
 
+  const statsInFlightRef = React.useRef(false);
+  const statsDebounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const fetchStats = useCallback(async (isManual = false) => {
+    if (!isManual && statsInFlightRef.current) return;
+    statsInFlightRef.current = true;
     if (isManual) {
       setRefreshing(true);
     }
@@ -69,6 +74,7 @@ export default function AdminStatsPage() {
       console.error('Failed to load live admin stats', err);
       toast.error('হিসাব লোড করতে সমস্যা হয়েছে');
     } finally {
+      statsInFlightRef.current = false;
       setLoading(false);
       setRefreshing(false);
     }
@@ -77,38 +83,42 @@ export default function AdminStatsPage() {
   useEffect(() => {
     fetchStats();
 
+    const scheduleFetchStats = () => {
+      if (statsDebounceRef.current) clearTimeout(statsDebounceRef.current);
+      statsDebounceRef.current = setTimeout(() => {
+        fetchStats(false);
+      }, 250);
+    };
+
     // Set up Realtime subscriptions to update immediately on any data change
     const channel = supabase
       .channel('admin-stats-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => fetchStats(false))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, () => fetchStats(false))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'submissions' }, () => fetchStats(false))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'ads' }, () => fetchStats(false))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'deposit_requests' }, () => fetchStats(false))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'withdraw_requests' }, () => fetchStats(false))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, scheduleFetchStats)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, scheduleFetchStats)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'submissions' }, scheduleFetchStats)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ads' }, scheduleFetchStats)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deposit_requests' }, scheduleFetchStats)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'withdraw_requests' }, scheduleFetchStats)
       .subscribe();
 
-    const handleDataUpdate = () => {
-      fetchStats(false);
-    };
-
-    window.addEventListener('iz_users_updated', handleDataUpdate);
-    window.addEventListener('iz_balance_updated', handleDataUpdate);
-    window.addEventListener('iz_platform_controls_updated', handleDataUpdate);
-    window.addEventListener('iz_email_notification_queued', handleDataUpdate);
-    window.addEventListener('iz_jobs_updated', handleDataUpdate);
-    window.addEventListener('submission_updated', handleDataUpdate);
-    window.addEventListener('iz_ads_updated', handleDataUpdate);
+    window.addEventListener('iz_users_updated', scheduleFetchStats);
+    window.addEventListener('iz_balance_updated', scheduleFetchStats);
+    window.addEventListener('iz_platform_controls_updated', scheduleFetchStats);
+    window.addEventListener('iz_email_notification_queued', scheduleFetchStats);
+    window.addEventListener('iz_jobs_updated', scheduleFetchStats);
+    window.addEventListener('submission_updated', scheduleFetchStats);
+    window.addEventListener('iz_ads_updated', scheduleFetchStats);
 
     return () => {
+      if (statsDebounceRef.current) clearTimeout(statsDebounceRef.current);
       supabase.removeChannel(channel);
-      window.removeEventListener('iz_users_updated', handleDataUpdate);
-      window.removeEventListener('iz_balance_updated', handleDataUpdate);
-      window.removeEventListener('iz_platform_controls_updated', handleDataUpdate);
-      window.removeEventListener('iz_email_notification_queued', handleDataUpdate);
-      window.removeEventListener('iz_jobs_updated', handleDataUpdate);
-      window.removeEventListener('submission_updated', handleDataUpdate);
-      window.removeEventListener('iz_ads_updated', handleDataUpdate);
+      window.removeEventListener('iz_users_updated', scheduleFetchStats);
+      window.removeEventListener('iz_balance_updated', scheduleFetchStats);
+      window.removeEventListener('iz_platform_controls_updated', scheduleFetchStats);
+      window.removeEventListener('iz_email_notification_queued', scheduleFetchStats);
+      window.removeEventListener('iz_jobs_updated', scheduleFetchStats);
+      window.removeEventListener('submission_updated', scheduleFetchStats);
+      window.removeEventListener('iz_ads_updated', scheduleFetchStats);
     };
   }, [fetchStats]);
 

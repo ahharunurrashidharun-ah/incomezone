@@ -166,8 +166,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(initialSession ? initialSession.user : null);
   const [profile, setProfile] = useState<UserProfile | null>(initialSession ? initialSession.profile : null);
   const [loading, setLoading] = useState<boolean>(!initialSession);
+  const userRef = React.useRef<AppUser | null>(initialSession ? initialSession.user : null);
+  const profileRef = React.useRef<UserProfile | null>(initialSession ? initialSession.profile : null);
+  const inFlightProfileRef = React.useRef<Map<string, Promise<void>>>(new Map());
+
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
+
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
 
   const fetchProfile = async (authUserId: string, authUser: User) => {
+    const existingPromise = inFlightProfileRef.current.get(authUserId);
+    if (existingPromise) {
+      return existingPromise;
+    }
+
+    const runPromise = (async () => {
     try {
       const email = authUser.email || '';
       const fallbackName = 
@@ -294,6 +311,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           if (!insertError && inserted) {
             userRow = inserted;
+          } else if (insertError) {
+            // Retry with guaranteed unique username in case another account already uses fallbackUsername
+            const uniqueUsername = `${String(fallbackUsername).replace(/[^a-zA-Z0-9_]/g, '') || 'user'}_${authUserId.slice(0, 6)}`;
+            const { data: retryInserted, error: retryErr } = await supabase
+              .from('users')
+              .upsert({ ...newUserData, username: uniqueUsername }, { onConflict: 'id' })
+              .select()
+              .maybeSingle();
+            if (!retryErr && retryInserted) {
+              userRow = retryInserted;
+            } else {
+              console.error('Failed to auto-create public.users row:', retryErr || insertError);
+              userRow = { ...newUserData, username: uniqueUsername };
+            }
           } else {
             userRow = newUserData;
           }
@@ -404,8 +435,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isLocked: isLockedUser,
       };
 
-      setProfile(mappedProfile);
-      setUser(appUser);
+      const prevProfile = profileRef.current;
+      const isProfileUnchanged = Boolean(
+        prevProfile &&
+        prevProfile.id === mappedProfile.id &&
+        prevProfile.email === mappedProfile.email &&
+        prevProfile.name === mappedProfile.name &&
+        prevProfile.username === mappedProfile.username &&
+        prevProfile.depositBalance === mappedProfile.depositBalance &&
+        prevProfile.earningBalance === mappedProfile.earningBalance &&
+        prevProfile.role === mappedProfile.role &&
+        prevProfile.status === mappedProfile.status &&
+        prevProfile.is_pending === mappedProfile.is_pending &&
+        prevProfile.isLocked === mappedProfile.isLocked &&
+        prevProfile.display_id === mappedProfile.display_id
+      );
+
+      if (!isProfileUnchanged) {
+        setProfile(mappedProfile);
+        setUser(appUser);
+      }
       saveStoredSession(appUser, mappedProfile);
 
     } catch (err) {
@@ -467,6 +516,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(fallbackAppUser);
       setProfile(fallbackProfile);
       saveStoredSession(fallbackAppUser, fallbackProfile);
+    }
+    })();
+
+    inFlightProfileRef.current.set(authUserId, runPromise);
+    try {
+      await runPromise;
+    } finally {
+      inFlightProfileRef.current.delete(authUserId);
     }
   };
 
@@ -645,6 +702,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         
         if (session?.user && mounted) {
           await fetchProfile(session.user.id, session.user);
+        } else if (mounted) {
+          // Local session existed without an active Supabase JWT; try refreshing before clearing
+          try {
+            const { data: refreshed } = await supabase.auth.refreshSession();
+            if (refreshed?.session?.user && mounted) {
+              await fetchProfile(refreshed.session.user.id, refreshed.session.user);
+            } else {
+              clearStoredSession();
+              setUser(null);
+              setProfile(null);
+            }
+          } catch {
+            clearStoredSession();
+            setUser(null);
+            setProfile(null);
+          }
         }
       } catch (err) {
         console.error('Error fetching initial session:', err);
@@ -692,7 +765,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const activeSession = getValidStoredSession();
       if (!activeSession) {
         // 3 hours expired!
-        const hadUser = localStorage.getItem(AUTH_SESSION_KEY) !== null || user !== null;
+        const hadUser = localStorage.getItem(AUTH_SESSION_KEY) !== null || userRef.current !== null;
         if (hadUser) {
           clearStoredSession();
           if (mounted) {
@@ -709,8 +782,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const detail = e.detail;
       // Skip events dispatched by auth_context itself to avoid loop
       if (detail && detail.source !== 'auth_context') {
+        const currentUser = userRef.current;
         // If event specifies target userId, only apply to current user if matching
-        if (detail.userId && user && detail.userId !== user.uid) {
+        if (detail.userId && currentUser && detail.userId !== currentUser.uid) {
           return;
         }
 
@@ -730,9 +804,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               depositBalance: updatedDep,
               earningBalance: updatedEarn,
             };
-            if (user) {
-              saveStoredSession({ ...user, depositBalance: updatedDep, earningBalance: updatedEarn }, updated);
-              saveLocalUser(user.uid, { deposit_balance: updatedDep, earning_balance: updatedEarn });
+            if (currentUser) {
+              saveStoredSession({ ...currentUser, depositBalance: updatedDep, earningBalance: updatedEarn }, updated);
+              saveLocalUser(currentUser.uid, { deposit_balance: updatedDep, earning_balance: updatedEarn });
             }
             return updated;
           });
@@ -741,6 +815,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (!prev) return prev;
             const updatedDep = nextDeposit !== undefined ? nextDeposit : (prev.depositBalance ?? 0);
             const updatedEarn = nextEarning !== undefined ? nextEarning : (prev.earningBalance ?? 0);
+            if (prev.depositBalance === updatedDep && prev.earningBalance === updatedEarn) {
+              return prev;
+            }
             return {
               ...prev,
               depositBalance: updatedDep,

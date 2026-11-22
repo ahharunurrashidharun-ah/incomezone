@@ -189,17 +189,16 @@ export interface LocalWithdrawRequest {
 
 export function isTableMissingError(error: any): boolean {
   if (!error) return false;
-  const code = error.code || '';
-  const msg = (error.message || error.stack || '').toString().toLowerCase();
+  const code = String(error.code || '').toUpperCase();
+  const msg = (error.message || '').toString().toLowerCase();
   return (
     code === 'PGRST205' ||
+    code === '42P01' ||
     msg.includes('could not find the table') ||
-    msg.includes('schema cache') ||
-    msg.includes('relation') ||
-    msg.includes('does not exist') ||
-    msg.includes('failed to fetch') ||
-    msg.includes('networkerror') ||
-    msg.includes('fetch')
+    (msg.includes('relation') &&
+      msg.includes('does not exist') &&
+      !msg.includes('column') &&
+      !msg.includes('operator'))
   );
 }
 
@@ -642,7 +641,12 @@ export const syncDeletedUsersWithRemote = async (): Promise<DeletedUserItem[]> =
   }
 };
 
-export const deleteLocalUser = (id: string, reason?: string, fallbackUser?: any) => {
+export const deleteLocalUser = (
+  id: string,
+  reason?: string,
+  fallbackUser?: any,
+  options?: { silent?: boolean }
+) => {
   try {
     const data = localStorage.getItem(STORAGE_KEYS.USERS);
     let userToArchive: LocalUser | null = fallbackUser ? { ...fallbackUser } : null;
@@ -700,7 +704,9 @@ export const deleteLocalUser = (id: string, reason?: string, fallbackUser?: any)
     }
     localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(deletedList));
     pushDeletedUsersToRemote(deletedList);
-    window.dispatchEvent(new CustomEvent('iz_users_updated'));
+    if (!options?.silent) {
+      window.dispatchEvent(new CustomEvent('iz_users_updated'));
+    }
   } catch {}
 };
 

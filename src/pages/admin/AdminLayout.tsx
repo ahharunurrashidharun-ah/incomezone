@@ -38,8 +38,13 @@ export default function AdminLayout() {
   const navigate = useNavigate();
   const location = useLocation();
 
+  const countsInFlightRef = React.useRef(false);
+  const countsDebounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     const fetchAllCounts = async () => {
+      if (countsInFlightRef.current) return;
+      countsInFlightRef.current = true;
       try {
         const stats = await fetchLiveAdminStats();
         setPendingJobCount(stats.pendingJobsCount);
@@ -50,7 +55,16 @@ export default function AdminLayout() {
         setPendingUserCount(stats.pendingUsersCount);
       } catch (err) {
         console.warn('AdminLayout fetchAllCounts fallback error', err);
+      } finally {
+        countsInFlightRef.current = false;
       }
+    };
+
+    const scheduleFetchAllCounts = () => {
+      if (countsDebounceRef.current) clearTimeout(countsDebounceRef.current);
+      countsDebounceRef.current = setTimeout(() => {
+        fetchAllCounts();
+      }, 250);
     };
 
     fetchAllCounts();
@@ -58,31 +72,32 @@ export default function AdminLayout() {
     // Subscribe to realtime changes in all relevant tables
     const channel = supabase
       .channel('admin-layout-counts')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, fetchAllCounts)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'ads' }, fetchAllCounts)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'submissions' }, fetchAllCounts)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'deposit_requests' }, fetchAllCounts)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'withdraw_requests' }, fetchAllCounts)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, fetchAllCounts)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, scheduleFetchAllCounts)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ads' }, scheduleFetchAllCounts)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'submissions' }, scheduleFetchAllCounts)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deposit_requests' }, scheduleFetchAllCounts)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'withdraw_requests' }, scheduleFetchAllCounts)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, scheduleFetchAllCounts)
       .subscribe();
 
-    window.addEventListener('iz_email_notification_queued', fetchAllCounts);
-    window.addEventListener('iz_users_updated', fetchAllCounts);
-    window.addEventListener('iz_balance_updated', fetchAllCounts);
-    window.addEventListener('iz_platform_controls_updated', fetchAllCounts);
-    window.addEventListener('iz_jobs_updated', fetchAllCounts);
-    window.addEventListener('submission_updated', fetchAllCounts);
-    window.addEventListener('iz_ads_updated', fetchAllCounts);
+    window.addEventListener('iz_email_notification_queued', scheduleFetchAllCounts);
+    window.addEventListener('iz_users_updated', scheduleFetchAllCounts);
+    window.addEventListener('iz_balance_updated', scheduleFetchAllCounts);
+    window.addEventListener('iz_platform_controls_updated', scheduleFetchAllCounts);
+    window.addEventListener('iz_jobs_updated', scheduleFetchAllCounts);
+    window.addEventListener('submission_updated', scheduleFetchAllCounts);
+    window.addEventListener('iz_ads_updated', scheduleFetchAllCounts);
 
     return () => {
+      if (countsDebounceRef.current) clearTimeout(countsDebounceRef.current);
       supabase.removeChannel(channel);
-      window.removeEventListener('iz_email_notification_queued', fetchAllCounts);
-      window.removeEventListener('iz_users_updated', fetchAllCounts);
-      window.removeEventListener('iz_balance_updated', fetchAllCounts);
-      window.removeEventListener('iz_platform_controls_updated', fetchAllCounts);
-      window.removeEventListener('iz_jobs_updated', fetchAllCounts);
-      window.removeEventListener('submission_updated', fetchAllCounts);
-      window.removeEventListener('iz_ads_updated', fetchAllCounts);
+      window.removeEventListener('iz_email_notification_queued', scheduleFetchAllCounts);
+      window.removeEventListener('iz_users_updated', scheduleFetchAllCounts);
+      window.removeEventListener('iz_balance_updated', scheduleFetchAllCounts);
+      window.removeEventListener('iz_platform_controls_updated', scheduleFetchAllCounts);
+      window.removeEventListener('iz_jobs_updated', scheduleFetchAllCounts);
+      window.removeEventListener('submission_updated', scheduleFetchAllCounts);
+      window.removeEventListener('iz_ads_updated', scheduleFetchAllCounts);
     };
   }, []);
 

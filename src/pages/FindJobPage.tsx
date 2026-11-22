@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, 
   MapPin, 
@@ -25,7 +25,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, toValidUUID, formatJobDisplayId, formatUserDisplayId } from '../lib/supabaseClient';
 import { submitJobProof, uploadFile } from '../lib/jobService';
-import { compressImage } from '../lib/imageCompression';
+import { compressImage, fileToBase64 } from '../lib/imageCompression';
 import { getLocalJobs, getLocalAds, getLocalSubmissions, isTableMissingError } from '../lib/localFallbackStore';
 import { extractJobImageUrl, cleanJobDescription } from '../lib/jobImages';
 import toast from 'react-hot-toast';
@@ -33,6 +33,7 @@ import { JOB_CATEGORIES } from '../constants/jobCategories';
 
 export default function FindJobPage() {
   const { user, profile } = useAuth();
+  const navigate = useNavigate();
   const [jobs, setJobs] = useState<any[]>([]);
   const [ads, setAds] = useState<any[]>([]);
   const [submittedJobIds, setSubmittedJobIds] = useState<Set<string>>(new Set());
@@ -46,9 +47,12 @@ export default function FindJobPage() {
   const [screenshotPreviews, setScreenshotPreviews] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const applyLockRef = React.useRef(false);
+  const sessionSubmittedIdsRef = React.useRef<Set<string>>(new Set());
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [previewModalImg, setPreviewModalImg] = useState<string | null>(null);
+
+  const normalizeId = (id: any): string => String(id || '').trim().toLowerCase();
 
   const fetchSubmittedIds = async () => {
     if (!user) return;
@@ -57,18 +61,23 @@ export default function FindJobPage() {
 
     // 1. Fetch from Supabase for all known identifiers
     try {
-      const idsToQuery = Array.from(new Set([user.uid, user.id].filter(Boolean)));
-      for (const uid of idsToQuery) {
+      const idsToQuery = Array.from(
+        new Set([user.uid, user.id, profile?.id, toValidUUID(user.uid)].filter(Boolean))
+      );
+      if (idsToQuery.length > 0) {
         const { data, error } = await supabase
           .from('submissions')
           .select('job_id')
-          .eq('worker_id', uid);
+          .in('worker_id', idsToQuery);
 
         if (!error && Array.isArray(data)) {
           remoteConnected = true;
           data.forEach((d: any) => {
             const jId = d.job_id || d.jobId;
-            if (jId) submittedSet.add(String(jId));
+            if (jId) {
+              submittedSet.add(String(jId));
+              submittedSet.add(normalizeId(jId));
+            }
           });
         }
       }
@@ -94,9 +103,16 @@ export default function FindJobPage() {
           (wEmail && user.email && wEmail.toLowerCase() === user.email.toLowerCase())
         ) {
           submittedSet.add(String(jId));
+          submittedSet.add(normalizeId(jId));
         }
       });
     }
+
+    // Preserve any jobs submitted during the current browser session
+    sessionSubmittedIdsRef.current.forEach((id) => {
+      submittedSet.add(id);
+      submittedSet.add(normalizeId(id));
+    });
 
     setSubmittedJobIds(new Set(submittedSet));
   };
@@ -104,7 +120,13 @@ export default function FindJobPage() {
   const isJobSubmitted = (jobId: any): boolean => {
     if (!jobId) return false;
     const strId = String(jobId);
-    return submittedJobIds.has(strId) || submittedJobIds.has(jobId);
+    const normId = normalizeId(jobId);
+    return (
+      submittedJobIds.has(strId) ||
+      submittedJobIds.has(normId) ||
+      submittedJobIds.has(jobId) ||
+      sessionSubmittedIdsRef.current.has(normId)
+    );
   };
 
 
@@ -183,8 +205,6 @@ export default function FindJobPage() {
           return occupied < total;
         });
       setJobs(local);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -242,10 +262,11 @@ export default function FindJobPage() {
 
   useEffect(() => {
     if (!user) return;
+    let mounted = true;
 
-    fetchSubmittedIds();
-    fetchActiveJobs();
-    fetchActiveAds();
+    Promise.all([fetchSubmittedIds(), fetchActiveJobs(), fetchActiveAds()]).finally(() => {
+      if (mounted) setLoading(false);
+    });
 
     const channel = supabase
       .channel('find-jobs-channel')
@@ -269,10 +290,11 @@ export default function FindJobPage() {
     window.addEventListener('submission_updated', handleSubmissionsUpdated);
 
     return () => {
+      mounted = false;
       supabase.removeChannel(channel);
       window.removeEventListener('submission_updated', handleSubmissionsUpdated);
     };
-  }, [user]);
+  }, [user?.uid]);
 
   const handleSelectJob = (job: any) => {
     if (isJobSubmitted(job.id)) {
@@ -345,21 +367,37 @@ export default function FindJobPage() {
       setIsSubmitting(true);
       setSubmitError('');
 
-      // Upload screenshots
+      // Upload screenshots (Storage with fast timeout, fallback to compact compressed base64)
       const uploadedUrls: string[] = [];
       for (let i = 0; i < reqCount; i++) {
         const file = screenshotFiles[i];
         if (file) {
           try {
-            const compressedFile = await compressImage(file, 1080, 0.6);
-            const url = await uploadFile(compressedFile, 'proofs');
-            uploadedUrls.push(url);
+            const compressedFile = await compressImage(file, 900, 0.55, 60);
+            try {
+              const url = await Promise.race<string>([
+                uploadFile(compressedFile, 'proofs'),
+                new Promise<string>((_, reject) =>
+                  setTimeout(() => reject(new Error('Storage upload timeout')), 2500)
+                ),
+              ]);
+              uploadedUrls.push(url);
+            } catch (storageErr) {
+              console.warn("Storage upload unavailable, using compressed base64 proof:", storageErr);
+              let compactFile = await compressImage(file, 640, 0.5, 28);
+              let base64Url = await fileToBase64(compactFile);
+              if (base64Url.length > 220000) {
+                compactFile = await compressImage(compactFile, 440, 0.35, 18);
+                base64Url = await fileToBase64(compactFile);
+              }
+              uploadedUrls.push(base64Url);
+            }
           } catch (uploadErr: any) {
-            console.error("Upload error:", uploadErr);
-            setSubmitError("Failed to upload image. Please try again or contact admin.");
+            console.error("Image processing error:", uploadErr);
+            setSubmitError("স্ক্রিনশট প্রসেস করতে সমস্যা হয়েছে। অন্য একটি ছবি দিয়ে আবার চেষ্টা করুন।");
             setIsSubmitting(false);
             applyLockRef.current = false;
-            return; // Halt the entire submission process
+            return;
           }
         }
       }
@@ -379,15 +417,17 @@ export default function FindJobPage() {
       );
       
       const submittedJobId = String(selectedJob.id);
+      const normalizedSubmittedId = normalizeId(selectedJob.id);
 
-      // 1. Immediately register in submittedJobIds so it's impossible to submit again
-      setSubmittedJobIds(prev => new Set([...prev, submittedJobId, selectedJob.id]));
+      // 1. Immediately register in submittedJobIds & session ref so it can never return to Find Jobs
+      sessionSubmittedIdsRef.current.add(normalizedSubmittedId);
+      setSubmittedJobIds(prev => new Set([...prev, submittedJobId, normalizedSubmittedId, selectedJob.id]));
 
-      // 2. Immediately remove this job from jobs list so it vanishes from Find Jobs
-      setJobs(prevJobs => prevJobs.filter(j => String(j.id) !== submittedJobId && j.id !== selectedJob.id));
+      // 2. Immediately remove this job from Find Jobs list
+      setJobs(prevJobs => prevJobs.filter(j => normalizeId(j.id) !== normalizedSubmittedId));
 
       setSubmitSuccess(true);
-      toast.success('কাজের প্রমাণ সফলভাবে জমা হয়েছে! জবটি ফাইন্ড জব অপশন থেকে সম্পূর্ণ সরিয়ে নেওয়া হয়েছে।');
+      toast.success('কাজের প্রমাণ সফলভাবে জমা হয়েছে! Submitted Jobs অপশনে নেওয়া হচ্ছে...');
 
       setTimeout(() => {
         setSubmitSuccess(false);
@@ -395,10 +435,9 @@ export default function FindJobPage() {
         setScreenshotFiles([]);
         setScreenshotPreviews([]);
         setSelectedJob(null);
-        fetchSubmittedIds();
-        fetchActiveJobs();
         applyLockRef.current = false;
-      }, 1200);
+        navigate('/submitted-jobs');
+      }, 850);
     } catch (error: any) {
       console.error("Error submitting proof:", error);
       const errMsg = error.message || 'Failed to submit proof. Please try again.';
@@ -630,10 +669,10 @@ export default function FindJobPage() {
                   অন্যান্য জবে ফিরে যান
                 </button>
                 <Link
-                  to="/submissions"
+                  to="/submitted-jobs"
                   className="px-5 py-2.5 rounded-xl font-bold text-xs bg-purple-600 hover:bg-purple-700 dark:bg-amber-400 dark:hover:bg-amber-300 dark:text-slate-950 text-white transition-all shadow-md cursor-pointer inline-flex items-center gap-1.5"
                 >
-                  <span>My Submissions দেখুন</span>
+                  <span>Submitted Jobs দেখুন</span>
                 </Link>
               </div>
             </div>
@@ -660,12 +699,20 @@ export default function FindJobPage() {
               </div>
 
               {submitSuccess && (
-                <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 flex items-center gap-3">
-                  <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
-                  <div>
-                    <p className="text-sm font-bold">Proof submitted successfully!</p>
-                    <p className="text-xs text-emerald-600 dark:text-emerald-400">The employer will review your submission and release the reward.</p>
+                <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+                    <div>
+                      <p className="text-sm font-bold">প্রুফ সফলভাবে জমা হয়েছে! (Pending)</p>
+                      <p className="text-xs text-emerald-600 dark:text-emerald-400">সরাসরি Submitted Jobs অপশনে নেওয়া হচ্ছে...</p>
+                    </div>
                   </div>
+                  <Link
+                    to="/submitted-jobs"
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold whitespace-nowrap text-center"
+                  >
+                    Submitted Jobs দেখুন
+                  </Link>
                 </div>
               )}
 

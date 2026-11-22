@@ -85,7 +85,11 @@ export default function AdminUsersPage() {
   const [confirmPurgeUser, setConfirmPurgeUser] = useState<DeletedUserItem | null>(null);
   const [actionProcessing, setActionProcessing] = useState(false);
 
+  const isFetchingUsersRef = React.useRef(false);
+
   const fetchUsers = async () => {
+    if (isFetchingUsersRef.current) return;
+    isFetchingUsersRef.current = true;
     setLoading(true);
     try {
       // 1. Fetch and synchronize deleted users from remote Supabase settings and store
@@ -99,14 +103,14 @@ export default function AdminUsersPage() {
         .select('*')
         .order('created_at', { ascending: false });
 
-      // Auto-capture any deleted users from Supabase into deleted archive so they never leak into active
+      // Auto-capture any deleted users from Supabase into deleted archive silently (do not re-dispatch iz_users_updated)
       if (data && data.length > 0) {
         data.forEach((ru: any) => {
           if (ru.status === 'deleted' || ru.role === 'deleted') {
             const ruId = String(ru.id || '').toLowerCase().trim();
             const ruEmail = String(ru.email || '').toLowerCase().trim();
             if (!deletedIds.has(ruId) && (!ruEmail || !deletedEmails.has(ruEmail))) {
-              deleteLocalUser(ru.id, 'Deleted by Administrator', ru);
+              deleteLocalUser(ru.id, 'Deleted by Administrator', ru, { silent: true });
               deletedIds.add(ruId);
               if (ruEmail) deletedEmails.add(ruEmail);
             }
@@ -225,6 +229,7 @@ export default function AdminUsersPage() {
         }));
       setUsers(local);
     } finally {
+      isFetchingUsersRef.current = false;
       setLoading(false);
     }
   };

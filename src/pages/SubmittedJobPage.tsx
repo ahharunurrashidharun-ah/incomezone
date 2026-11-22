@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { supabase, formatJobDisplayId } from '../lib/supabaseClient';
+import { supabase, toValidUUID, formatJobDisplayId } from '../lib/supabaseClient';
 import { useAuth } from '../contexts/AuthContext';
 import { Link } from 'react-router-dom';
 import { 
@@ -10,8 +10,7 @@ import {
   Search, 
   Wallet, 
   Calendar,
-  Hourglass,
-  Sparkles
+  Hourglass
 } from 'lucide-react';
 import {
   getLocalSubmissions,
@@ -26,6 +25,7 @@ interface Submission {
   submittedAt: any;
   jobTitle: string;
   jobPrice: number;
+  rejectionReason?: string;
   job?: any;
 }
 
@@ -33,11 +33,15 @@ const BDT_PER_USD = 100;
 const AUTO_APPROVE_DAYS_MS = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
 
 export default function SubmittedJobPage() {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'pending' | 'approved' | 'rejected'>('ALL');
   const [now, setNow] = useState(Date.now());
+
+  const isLoadingDataRef = React.useRef(false);
+  const autoApprovedIdsRef = React.useRef<Set<string>>(new Set());
 
   // Live ticking clock for real-time countdown
   useEffect(() => {
@@ -48,35 +52,48 @@ export default function SubmittedJobPage() {
   }, []);
 
   useEffect(() => {
-    if (!user) {
+    if (!user?.uid) {
       setLoading(false);
       return;
     }
 
     const loadData = async () => {
+      if (isLoadingDataRef.current) return;
+      isLoadingDataRef.current = true;
       try {
-        // 1. Gather submissions from Supabase
+        // 1. Gather submissions from Supabase across all known worker identifiers
+        const idsToQuery = Array.from(
+          new Set([user.uid, user.id, profile?.id, toValidUUID(user.uid)].filter(Boolean))
+        );
         let remoteSubs: any[] = [];
         let isSubsConnected = false;
         try {
-          const { data, error } = await supabase
-            .from('submissions')
-            .select('*')
-            .eq('worker_id', user.uid)
-            .order('created_at', { ascending: false });
+          if (idsToQuery.length > 0) {
+            const { data, error } = await supabase
+              .from('submissions')
+              .select('*')
+              .in('worker_id', idsToQuery)
+              .order('created_at', { ascending: false });
 
-          if (!error && Array.isArray(data)) {
-            remoteSubs = data;
-            isSubsConnected = true;
+            if (!error && Array.isArray(data)) {
+              remoteSubs = data;
+              isSubsConnected = true;
+              setLoadError('');
+            } else if (error && error.message && !error.message.toLowerCase().includes('schema cache') && error.code !== 'PGRST205') {
+              setLoadError(`সাবমিশন লোড করতে সমস্যা হয়েছে: ${error.message}`);
+            }
           }
         } catch {}
 
         // 2. Fallback to local storage ONLY if remote DB is unreachable
+        const idSet = new Set(idsToQuery.map((id) => String(id).trim().toLowerCase()));
         const allRawSubs = (
           isSubsConnected
             ? remoteSubs
             : getLocalSubmissions().filter(
-                (s: any) => s.worker_id === user.uid || s.workerId === user.uid
+                (s: any) =>
+                  idSet.has(String(s.worker_id || '').trim().toLowerCase()) ||
+                  idSet.has(String(s.workerId || '').trim().toLowerCase())
               )
         ).sort((a, b) => {
           const tA = new Date(a.created_at || a.createdAt || Date.now()).getTime();
@@ -104,6 +121,7 @@ export default function SubmittedJobPage() {
               remoteJobs.forEach((j) => {
                 if (j.id) {
                   jobsMap[j.id] = j;
+                  jobsMap[String(j.id).trim().toLowerCase()] = j;
                 }
               });
             }
@@ -113,14 +131,18 @@ export default function SubmittedJobPage() {
         if (!isJobsConnected) {
           const localJobs = getLocalJobs();
           localJobs.forEach((j) => {
-            if (j.id) jobsMap[j.id] = j;
+            if (j.id) {
+              jobsMap[j.id] = j;
+              jobsMap[String(j.id).trim().toLowerCase()] = j;
+            }
           });
         }
 
-        // 6. Build finalized submission list with guaranteed titles & prices
+        // 6. Build finalized submission list with guaranteed titles, prices & proof details
         const finalizedList: Submission[] = allRawSubs.map((sub) => {
           const jobId = sub.job_id || sub.jobId;
-          const matchedJob = jobsMap[jobId] || {};
+          const matchedJob =
+            jobsMap[jobId] || jobsMap[String(jobId || '').trim().toLowerCase()] || {};
 
           // Extract title with graceful fallback
           const title =
@@ -148,16 +170,18 @@ export default function SubmittedJobPage() {
             submittedAt: sub.created_at || sub.createdAt || sub.submittedAt || Date.now(),
             jobTitle: title,
             jobPrice: price,
+            rejectionReason: sub.rejection_reason || sub.rejectionReason || '',
             job: matchedJob,
           };
         });
 
-        // 7. Check and execute 7-day Auto Approval for any pending submissions >= 7 days old
+        // 7. Check and execute 7-day Auto Approval for any pending submissions >= 7 days old (once per sub ID)
         let autoApprovedAny = false;
         for (const sub of finalizedList) {
-          if (sub.status === 'pending') {
+          if (sub.status === 'pending' && !autoApprovedIdsRef.current.has(sub.id)) {
             const subTime = new Date(sub.submittedAt).getTime();
             if (!isNaN(subTime) && Date.now() - subTime >= AUTO_APPROVE_DAYS_MS) {
+              autoApprovedIdsRef.current.add(sub.id);
               try {
                 await approveSubmission(sub.id, sub.jobId, user.uid);
                 sub.status = 'approved';
@@ -169,15 +193,15 @@ export default function SubmittedJobPage() {
           }
         }
 
+        setSubmissions(finalizedList);
+
         if (autoApprovedAny) {
-          window.dispatchEvent(new CustomEvent('submission_updated'));
           window.dispatchEvent(new CustomEvent('iz_balance_updated', { detail: { userId: user.uid } }));
         }
-
-        setSubmissions(finalizedList);
       } catch (err) {
         console.error('Error loading submissions:', err);
       } finally {
+        isLoadingDataRef.current = false;
         setLoading(false);
       }
     };
@@ -187,7 +211,7 @@ export default function SubmittedJobPage() {
 
     // Set up Real-time subscription for Supabase
     const channel = supabase
-      .channel('submissions_realtime_channel')
+      .channel(`submissions_realtime_${user.uid}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'submissions' },
@@ -195,19 +219,33 @@ export default function SubmittedJobPage() {
           loadData();
         }
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'jobs' },
+        () => {
+          loadData();
+        }
+      )
       .subscribe();
 
-    // Listen to local events
+    // Listen to local events & window focus
     const handleLocalUpdate = () => loadData();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') loadData();
+    };
     window.addEventListener('storage', handleLocalUpdate);
     window.addEventListener('submission_updated', handleLocalUpdate);
+    window.addEventListener('focus', handleLocalUpdate);
+    document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
       supabase.removeChannel(channel);
       window.removeEventListener('storage', handleLocalUpdate);
       window.removeEventListener('submission_updated', handleLocalUpdate);
+      window.removeEventListener('focus', handleLocalUpdate);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [user]);
+  }, [user?.uid]);
 
   // Calculations for summary stats
   const pendingSubs = submissions.filter((s) => s.status === 'pending');
@@ -329,6 +367,12 @@ export default function SubmittedJobPage() {
           জব সাবমিশনের ৭ দিন পর স্বয়ংক্রিয়ভাবে অটো-অ্যাপ্রুভড হয়ে আর্নিং ব্যালেন্স যোগ হবে।
         </p>
       </div>
+
+      {loadError && (
+        <div className="p-4 rounded-2xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800/60 text-red-700 dark:text-red-300 text-xs sm:text-sm font-bold">
+          {loadError}
+        </div>
+      )}
 
       {/* 2x2 Grid Compact Box Cards (এক লাইনে দুইটা করে মোট দুই লাইনে) */}
       <div className="grid grid-cols-2 gap-3 sm:gap-4">
@@ -554,6 +598,12 @@ export default function SubmittedJobPage() {
                         </span>
                       </div>
                     )}
+
+                    {sub.status === 'rejected' && sub.rejectionReason && (
+                      <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/60 rounded-xl px-3 py-2 text-xs text-red-700 dark:text-red-300 font-semibold">
+                        রিজেক্টের কারণ: {sub.rejectionReason}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -565,8 +615,8 @@ export default function SubmittedJobPage() {
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50 dark:bg-[#080412]/80 border-b border-slate-200 dark:border-purple-900/40">
-                  <th className="py-3.5 px-6 text-xs font-bold text-purple-600 dark:text-amber-400 uppercase tracking-wider w-36">Task ID</th>
-                  <th className="py-3.5 px-6 text-xs font-bold text-purple-600 dark:text-amber-400 uppercase tracking-wider">Job Title & Submission Time</th>
+                  <th className="py-3.5 px-6 text-xs font-bold text-purple-600 dark:text-amber-400 uppercase tracking-wider w-36">Job ID</th>
+                  <th className="py-3.5 px-6 text-xs font-bold text-purple-600 dark:text-amber-400 uppercase tracking-wider">Job Name & Submit Time</th>
                   <th className="py-3.5 px-6 text-xs font-bold text-purple-600 dark:text-amber-400 uppercase tracking-wider">Status & Countdown</th>
                   <th className="py-3.5 px-6 text-xs font-bold text-purple-600 dark:text-amber-400 uppercase tracking-wider text-right">Reward</th>
                 </tr>
@@ -586,7 +636,7 @@ export default function SubmittedJobPage() {
                           <span>{formatSubmissionDate(sub.submittedAt)}</span>
                         </div>
                       </td>
-                      <td className="py-4 px-6 whitespace-nowrap">
+                      <td className="py-4 px-6">
                         <div className="space-y-1">
                           {renderStatusBadge(sub.status)}
                           {sub.status === 'pending' && (
@@ -594,6 +644,11 @@ export default function SubmittedJobPage() {
                               <Hourglass className="w-3 h-3 text-amber-500 animate-spin shrink-0" />
                               <span>Auto Approve: {getCountdownText(sub.submittedAt)}</span>
                             </div>
+                          )}
+                          {sub.status === 'rejected' && sub.rejectionReason && (
+                            <p className="text-[11px] font-semibold text-red-600 dark:text-red-400 max-w-xs">
+                              কারণ: {sub.rejectionReason}
+                            </p>
                           )}
                         </div>
                       </td>

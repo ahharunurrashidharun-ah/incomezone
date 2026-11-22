@@ -10,7 +10,7 @@ import {
   getLocalSubmissions,
   isTableMissingError,
 } from '../lib/localFallbackStore';
-import { extractJobImageUrl, cleanJobDescription } from '../lib/jobImages';
+import { extractJobImageUrl, cleanJobDescription, parseProofScreenshots } from '../lib/jobImages';
 import toast from 'react-hot-toast';
 
 const FallbackImage = ({ src, alt, className }: { src: string, alt: string, className: string }) => {
@@ -44,21 +44,18 @@ export default function MyJobsPage() {
   const [selectedJob, setSelectedJob] = useState<any | null>(null);
   const [submissions, setSubmissions] = useState<any[]>([]);
   const [loadingSubmissions, setLoadingSubmissions] = useState(false);
+  const [subsError, setSubsError] = useState('');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [previewModalImg, setPreviewModalImg] = useState<string | null>(null);
   const [subFilter, setSubFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [pendingCounts, setPendingCounts] = useState<Record<string, number>>({});
   const [rejectingSub, setRejectingSub] = useState<any | null>(null);
+  const actionLockRef = React.useRef<Set<string>>(new Set());
 
   const countPendingSubmissions = async (jobList: any[]) => {
-    // Only jobs that are active or completed AND have at least 1 occupied slot can have worker submissions to review.
-    // If a job is pending admin approval ('pending') or rejected by admin ('rejected'),
-    // it MUST NEVER have pending review badges.
-    const eligibleJobs = jobList.filter(
-      (j: any) =>
-        (j.status === 'active' || j.status === 'completed') &&
-        (Number(j.occupiedSlots ?? j.occupied_slots ?? 0) > 0)
-    );
+    // Check all non-rejected posted jobs directly against submissions table
+    // so pending proofs are ALWAYS visible even if occupied_slots lagged.
+    const eligibleJobs = jobList.filter((j: any) => j.status !== 'rejected');
 
     const eligibleJobIds = eligibleJobs.map((j: any) => j.id).filter(Boolean);
 
@@ -110,10 +107,13 @@ export default function MyJobsPage() {
     if (!user) return;
     const userUuid = toValidUUID(user.uid);
     try {
+      const ownerFilter = userUuid && userUuid !== user.uid
+        ? `owner_id.eq.${user.uid},employer_id.eq.${user.uid},owner_id.eq.${userUuid},employer_id.eq.${userUuid}`
+        : `owner_id.eq.${user.uid},employer_id.eq.${user.uid}`;
       const { data, error } = await supabase
         .from('jobs')
         .select('*')
-        .eq('owner_id', user.uid)
+        .or(ownerFilter)
         .order('created_at', { ascending: false });
 
       if (error && isTableMissingError(error)) {
@@ -241,11 +241,12 @@ export default function MyJobsPage() {
     } catch {
       // Channel fallback
     }
-  }, [user]);
+  }, [user?.uid]);
 
   // Load Submissions when a job is selected
   const fetchSubmissionsForJob = async (jobId: string) => {
     setLoadingSubmissions(true);
+    setSubsError('');
     try {
       const { data, error } = await supabase
         .from('submissions')
@@ -256,17 +257,21 @@ export default function MyJobsPage() {
       if (error && isTableMissingError(error)) {
         const local = getLocalSubmissions()
           .filter((s) => s.job_id === jobId)
-          .map((s: any) => ({
-            id: s.id,
-            jobId: s.job_id,
-            workerId: s.worker_id,
-            workerDisplayId: formatUserDisplayId(s.worker_display_id || s.workerDisplayId, s.worker_id),
-            proofText: s.proof_text || s.proof || '',
-            proofScreenshotUrl: s.proof_screenshot_url || '',
-            proofScreenshotUrls: s.proof_screenshot_urls || (s.proof_screenshot_url ? [s.proof_screenshot_url] : []),
-            status: s.status || 'pending',
-            createdAt: s.created_at,
-          }));
+          .map((s: any) => {
+            const urls = parseProofScreenshots(s);
+            return {
+              id: s.id,
+              jobId: s.job_id,
+              workerId: s.worker_id,
+              workerDisplayId: formatUserDisplayId(s.worker_display_id || s.workerDisplayId, s.worker_id),
+              proofText: s.proof_text || s.proof || '',
+              proofScreenshotUrl: urls[0] || '',
+              proofScreenshotUrls: urls,
+              rejectionReason: s.rejection_reason || s.rejectionReason || '',
+              status: s.status || 'pending',
+              createdAt: s.created_at,
+            };
+          });
         setSubmissions(local);
         return;
       }
@@ -290,7 +295,7 @@ export default function MyJobsPage() {
           }
 
           const formattedSubs = data.map((s: any) => {
-            const urls = s.proof_screenshot_urls ?? s.proofScreenshotUrls ?? (s.proof_screenshot_url ? [s.proof_screenshot_url] : []);
+            const urls = parseProofScreenshots(s);
             const wId = s.worker_id || s.workerId;
             const matchedWorker = workersMap[wId];
             const rawDisplayId = s.worker_display_id ?? s.workerDisplayId ?? matchedWorker?.display_id ?? matchedWorker?.displayId;
@@ -302,8 +307,9 @@ export default function MyJobsPage() {
               workerId: wId,
               workerDisplayId: workerDisplay,
               proofText: s.proof_text || s.proofText || s.proof || '',
-              proofScreenshotUrl: s.proof_screenshot_url || s.proofScreenshotUrl || (urls[0] || ''),
-              proofScreenshotUrls: Array.isArray(urls) ? urls : (urls ? [urls] : []),
+              proofScreenshotUrl: urls[0] || '',
+              proofScreenshotUrls: urls,
+              rejectionReason: s.rejection_reason || s.rejectionReason || '',
               status: s.status || 'pending',
               createdAt: s.created_at || s.submittedAt || s.createdAt,
             };
@@ -314,20 +320,29 @@ export default function MyJobsPage() {
         }
         return;
       }
+
+      if (error) {
+        setSubsError(`সাবমিশন লোড করা যায়নি: ${error.message}`);
+        setSubmissions([]);
+      }
     } catch {
       const local = getLocalSubmissions()
         .filter((s) => s.job_id === jobId)
-        .map((s: any) => ({
-          id: s.id,
-          jobId: s.job_id,
-          workerId: s.worker_id,
-          workerDisplayId: formatUserDisplayId(s.worker_display_id || s.workerDisplayId, s.worker_id),
-          proofText: s.proof_text || s.proof || '',
-          proofScreenshotUrl: s.proof_screenshot_url || '',
-          proofScreenshotUrls: s.proof_screenshot_urls || (s.proof_screenshot_url ? [s.proof_screenshot_url] : []),
-          status: s.status || 'pending',
-          createdAt: s.created_at,
-        }));
+        .map((s: any) => {
+          const urls = parseProofScreenshots(s);
+          return {
+            id: s.id,
+            jobId: s.job_id,
+            workerId: s.worker_id,
+            workerDisplayId: formatUserDisplayId(s.worker_display_id || s.workerDisplayId, s.worker_id),
+            proofText: s.proof_text || s.proof || '',
+            proofScreenshotUrl: urls[0] || '',
+            proofScreenshotUrls: urls,
+            rejectionReason: s.rejection_reason || s.rejectionReason || '',
+            status: s.status || 'pending',
+            createdAt: s.created_at,
+          };
+        });
       setSubmissions(local);
     } finally {
       setLoadingSubmissions(false);
@@ -353,7 +368,7 @@ export default function MyJobsPage() {
     return () => {
       supabase.removeChannel(subChannel);
     };
-  }, [selectedJob]);
+  }, [selectedJob?.id]);
 
   // Lock body scroll and listen for Escape key when modals are open
   useEffect(() => {
@@ -382,16 +397,18 @@ export default function MyJobsPage() {
 
   const handleApprove = async (subId: string, workerId: string) => {
     if (!selectedJob) return;
+    if (actionLockRef.current.has(subId)) return;
     const sub = submissions.find(s => s.id === subId);
     if (sub && sub.status !== 'pending') {
       toast.error("This submission has already been reviewed!");
       return;
     }
+    actionLockRef.current.add(subId);
     setActionLoading(subId);
     try {
       await approveSubmission(subId, selectedJob.id, workerId);
       toast.success('Submission approved and worker paid!');
-      setSubmissions(prev => prev.map(s => s.id === subId ? { ...s, status: 'approved' } : s));
+      setSubmissions(prev => prev.map(s => s.id === subId ? { ...s, status: 'approved', proofScreenshotUrl: '', proofScreenshotUrls: [] } : s));
       setPendingCounts(prev => {
         const nextCount = Math.max(0, (prev[selectedJob.id] || 1) - 1);
         const next = { ...prev };
@@ -405,6 +422,7 @@ export default function MyJobsPage() {
       fetchSubmissionsForJob(selectedJob.id);
       fetchMyJobs();
     } catch (err: any) {
+      actionLockRef.current.delete(subId);
       toast.error(err.message || 'Failed to approve submission');
     } finally {
       setActionLoading(null);
@@ -423,11 +441,13 @@ export default function MyJobsPage() {
   const handleConfirmReject = async (reason: string) => {
     if (!selectedJob || !rejectingSub) return;
     const subId = rejectingSub.id;
+    if (actionLockRef.current.has(subId)) return;
+    actionLockRef.current.add(subId);
     setActionLoading(subId);
     try {
       await rejectSubmission(subId, selectedJob.id, reason);
       toast.success('কাজের সাবমিশন রিজেক্ট করা হয়েছে!');
-      setSubmissions(prev => prev.map(s => s.id === subId ? { ...s, status: 'rejected', rejection_reason: reason } : s));
+      setSubmissions(prev => prev.map(s => s.id === subId ? { ...s, status: 'rejected', rejectionReason: reason, rejection_reason: reason, proofScreenshotUrl: '', proofScreenshotUrls: [] } : s));
       setPendingCounts(prev => {
         const nextCount = Math.max(0, (prev[selectedJob.id] || 1) - 1);
         const next = { ...prev };
@@ -442,6 +462,7 @@ export default function MyJobsPage() {
       fetchSubmissionsForJob(selectedJob.id);
       fetchMyJobs();
     } catch (err: any) {
+      actionLockRef.current.delete(subId);
       toast.error(err.message || 'Failed to reject submission');
     } finally {
       setActionLoading(null);
@@ -486,7 +507,7 @@ export default function MyJobsPage() {
       ) : (
         <div className="grid grid-cols-1 gap-4">
           {jobs.map((job) => {
-            const isEligibleForReview = (job.status === 'active' || job.status === 'completed') && (Number(job.occupiedSlots ?? job.occupied_slots ?? 0) > 0);
+            const isEligibleForReview = job.status !== 'rejected';
             const pendingCount = isEligibleForReview ? (pendingCounts[job.id] || 0) : 0;
             return (
               <div key={job.id} className="bg-white dark:bg-[#130b2c]/85 dark:backdrop-blur-md rounded-2xl shadow-sm dark:shadow-lg dark:shadow-purple-950/40 border border-slate-200 dark:border-purple-500/20 p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 transition-all hover:border-purple-300 dark:hover:border-amber-400/40">
@@ -663,6 +684,11 @@ export default function MyJobsPage() {
             
             {/* Scrollable Middle Container: scrolls smoothly in center */}
             <div className="p-4 sm:p-6 overflow-y-auto overscroll-contain flex-1 space-y-4">
+              {subsError && (
+                <div className="p-4 rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800/60 text-red-700 dark:text-red-300 text-xs sm:text-sm font-bold">
+                  {subsError}
+                </div>
+              )}
               {loadingSubmissions ? (
                 <div className="flex flex-col justify-center items-center py-16 gap-3">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 dark:border-amber-400"></div>
@@ -756,7 +782,7 @@ export default function MyJobsPage() {
                     {sub.status === 'pending' ? (
                       <div className="flex gap-3 justify-end pt-2">
                         <button
-                          disabled={actionLoading === sub.id}
+                          disabled={actionLoading === sub.id || actionLockRef.current.has(sub.id)}
                           onClick={() => handleRejectClick(sub)}
                           className="inline-flex items-center px-4 py-2 border border-red-200 dark:border-red-500/40 text-red-600 dark:text-red-400 rounded-xl text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors disabled:opacity-50 bg-white dark:bg-transparent cursor-pointer"
                         >
@@ -764,7 +790,7 @@ export default function MyJobsPage() {
                           Reject & Reopen Slot
                         </button>
                         <button
-                          disabled={actionLoading === sub.id}
+                          disabled={actionLoading === sub.id || actionLockRef.current.has(sub.id)}
                           onClick={() => handleApprove(sub.id, sub.workerId)}
                           className="inline-flex items-center px-4 py-2 bg-purple-600 hover:bg-purple-700 dark:bg-gradient-to-r dark:from-amber-400 dark:to-yellow-500 dark:hover:from-amber-300 dark:hover:to-yellow-400 text-white dark:text-slate-950 rounded-xl text-xs font-bold transition-colors disabled:opacity-50 shadow-md shadow-purple-600/20 dark:shadow-amber-500/20 cursor-pointer"
                         >
@@ -773,13 +799,18 @@ export default function MyJobsPage() {
                         </button>
                       </div>
                     ) : (
-                      <div className="flex justify-end pt-2">
+                      <div className="flex flex-col items-end gap-1.5 pt-2">
                         <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold border uppercase ${
                           sub.status === 'approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/30' :
                           'bg-red-50 text-red-700 border-red-200 dark:bg-red-500/10 dark:text-red-400 dark:border-red-500/30'
                         }`}>
                           {sub.status === 'approved' ? 'Approved' : 'Rejected'}
                         </span>
+                        {sub.status === 'rejected' && (sub.rejectionReason || sub.rejection_reason) && (
+                          <p className="text-xs font-semibold text-red-600 dark:text-red-400">
+                            রিজেক্টের কারণ: {sub.rejectionReason || sub.rejection_reason}
+                          </p>
+                        )}
                       </div>
                     )}
                   </div>

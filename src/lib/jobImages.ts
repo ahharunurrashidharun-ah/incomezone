@@ -159,3 +159,50 @@ export function attachImageToDescription(description: string, imageUrl?: string)
   }
   return `${clean}\n\n[Thumbnail: ${imageUrl.trim()}]`;
 }
+
+/**
+ * Extracts an array of screenshot URLs from any submission row
+ * (handles arrays, single URLs, base64 data URIs, and JSON-encoded string arrays).
+ */
+export function parseProofScreenshots(sub: any): string[] {
+  if (!sub) return [];
+
+  const result: string[] = [];
+  const pushItem = (item: any) => {
+    if (!item || typeof item !== 'string') return;
+    const trimmed = item.trim();
+    if (!trimmed) return;
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((p) => pushItem(p));
+          return;
+        }
+      } catch {}
+    }
+    if (!result.includes(trimmed)) {
+      result.push(trimmed);
+    }
+  };
+
+  const candidates = [
+    sub.proof_screenshot_urls,
+    sub.proofScreenshotUrls,
+    sub.proof_screenshot_url,
+    sub.proofScreenshotUrl,
+    sub.screenshotUrl,
+    sub.proof_file_url,
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (Array.isArray(candidate)) {
+      candidate.forEach((c) => pushItem(c));
+    } else if (typeof candidate === 'string') {
+      pushItem(candidate);
+    }
+  }
+
+  return result;
+}

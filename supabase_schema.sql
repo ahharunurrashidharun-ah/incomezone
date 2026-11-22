@@ -115,11 +115,38 @@ CREATE TABLE IF NOT EXISTS public.submissions (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- Safe column migrations if submissions table already existed
+-- Safe column migrations & legacy NOT NULL relaxation if submissions table already existed
 ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS worker_display_id TEXT;
+ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS proof_text TEXT;
+ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS proof_file_url TEXT;
 ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS proof_screenshot_url TEXT;
+ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';
 ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+
+DO $$
+BEGIN
+  -- Relax any legacy NOT NULL constraints on optional/legacy columns
+  BEGIN
+    ALTER TABLE public.submissions ALTER COLUMN proof_file_url DROP NOT NULL;
+  EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN
+    ALTER TABLE public.submissions ALTER COLUMN proof_text DROP NOT NULL;
+  EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN
+    ALTER TABLE public.submissions ALTER COLUMN proof_screenshot_url DROP NOT NULL;
+  EXCEPTION WHEN OTHERS THEN NULL; END;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'submissions' AND column_name = 'user_id') THEN
+    BEGIN
+      ALTER TABLE public.submissions ALTER COLUMN user_id DROP NOT NULL;
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'submissions' AND column_name = 'proof') THEN
+    BEGIN
+      ALTER TABLE public.submissions ALTER COLUMN proof DROP NOT NULL;
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+  END IF;
+END $$;
 
 -- Enforce strictly that one user can only submit proof ONCE per job
 DO $$
@@ -240,6 +267,73 @@ CREATE TABLE IF NOT EXISTS public.site_settings (
   rocket_number TEXT DEFAULT '',
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+-- ==============================================================================
+-- 8B. CLEAN UP BROKEN / LEGACY CUSTOM TRIGGERS (Fixes "tg_schema_name" error)
+-- ==============================================================================
+DO $$
+DECLARE
+  trig RECORD;
+  fn RECORD;
+BEGIN
+  -- 1. Drop ALL non-internal custom triggers on public app tables
+  -- (IncomeZone only uses on_auth_user_created on auth.users;
+  --  foreign keys use internal triggers and Realtime uses publications.)
+  FOR trig IN
+    SELECT n.nspname AS schema_name, c.relname AS table_name, t.tgname AS trigger_name
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE NOT t.tgisinternal
+      AND n.nspname = 'public'
+      AND c.relname IN (
+        'users',
+        'jobs',
+        'submissions',
+        'deposit_requests',
+        'withdraw_requests',
+        'ads',
+        'email_notifications',
+        'settings',
+        'site_settings'
+      )
+  LOOP
+    BEGIN
+      EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I.%I;', trig.trigger_name, trig.schema_name, trig.table_name);
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END;
+  END LOOP;
+
+  -- 2. Drop any broken trigger/function in public referencing tg_schema_name
+  FOR trig IN
+    SELECT n.nspname AS schema_name, c.relname AS table_name, t.tgname AS trigger_name
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_proc p ON p.oid = t.tgfoid
+    WHERE NOT t.tgisinternal
+      AND n.nspname = 'public'
+      AND COALESCE(p.prosrc, '') ILIKE '%tg_schema_name%'
+  LOOP
+    BEGIN
+      EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I.%I;', trig.trigger_name, trig.schema_name, trig.table_name);
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END;
+  END LOOP;
+
+  FOR fn IN
+    SELECT n.nspname AS schema_name, p.proname AS func_name, pg_get_function_identity_arguments(p.oid) AS func_args
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND COALESCE(p.prosrc, '') ILIKE '%tg_schema_name%'
+  LOOP
+    BEGIN
+      EXECUTE format('DROP FUNCTION IF EXISTS %I.%I(%s) CASCADE;', fn.schema_name, fn.func_name, fn.func_args);
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END;
+  END LOOP;
+END $$;
 
 -- ==============================================================================
 -- 9. BULLETPROOF AUTOMATIC USER SYNC TRIGGER & ADMIN HELPER
@@ -363,6 +457,38 @@ CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 
+-- Backfill any existing auth.users missing from public.users (prevents submissions/jobs foreign key failures)
+INSERT INTO public.users (
+  id,
+  email,
+  name,
+  username,
+  deposit_balance,
+  earning_balance,
+  role,
+  is_locked,
+  status,
+  is_pending,
+  created_at
+)
+SELECT
+  au.id,
+  au.email,
+  COALESCE(au.raw_user_meta_data->>'name', au.raw_user_meta_data->>'full_name', split_part(au.email, '@', 1), 'User'),
+  COALESCE(NULLIF(lower(regexp_replace(COALESCE(au.raw_user_meta_data->>'username', split_part(au.email, '@', 1), 'user'), '[^a-zA-Z0-9_]', '', 'g')), ''), 'user') || '_' || substr(replace(au.id::text, '-', ''), 1, 6),
+  0.00,
+  0.00,
+  CASE WHEN lower(COALESCE(au.email, '')) = 'incomezone2729@gmail.com' THEN 'admin' ELSE COALESCE(au.raw_user_meta_data->>'role', 'user') END,
+  FALSE,
+  'active',
+  FALSE,
+  COALESCE(au.created_at, timezone('utc'::text, now()))
+FROM auth.users au
+WHERE NOT EXISTS (
+  SELECT 1 FROM public.users pu WHERE pu.id::text = au.id::text
+)
+ON CONFLICT (id) DO NOTHING;
+
 -- ==============================================================================
 -- 10. ROW LEVEL SECURITY (RLS) POLICIES (Complete SELECT, INSERT, UPDATE, DELETE)
 -- ==============================================================================
@@ -376,126 +502,105 @@ ALTER TABLE public.email_notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.site_settings ENABLE ROW LEVEL SECURITY;
 
--- Clean existing policies safely
-DROP POLICY IF EXISTS "Public users are viewable by everyone" ON public.users;
-DROP POLICY IF EXISTS "Users can insert their own profile" ON public.users;
-DROP POLICY IF EXISTS "Users can update own profile or admins update all" ON public.users;
-DROP POLICY IF EXISTS "Admins can delete users" ON public.users;
-
-DROP POLICY IF EXISTS "Jobs are viewable by everyone" ON public.jobs;
-DROP POLICY IF EXISTS "Authenticated users can create jobs" ON public.jobs;
-DROP POLICY IF EXISTS "Job owners and admins can update jobs" ON public.jobs;
-DROP POLICY IF EXISTS "Job owners and admins can delete jobs" ON public.jobs;
-
-DROP POLICY IF EXISTS "Submissions are viewable by worker, job owner, and admin" ON public.submissions;
-DROP POLICY IF EXISTS "Authenticated users can submit proofs" ON public.submissions;
-DROP POLICY IF EXISTS "Admins and job owners can update submissions" ON public.submissions;
-DROP POLICY IF EXISTS "Admins can delete submissions" ON public.submissions;
-
-DROP POLICY IF EXISTS "Deposit requests viewable by owner and admin" ON public.deposit_requests;
-DROP POLICY IF EXISTS "Authenticated users can request deposit" ON public.deposit_requests;
-DROP POLICY IF EXISTS "Admins can update deposit requests" ON public.deposit_requests;
-DROP POLICY IF EXISTS "Admins can delete deposit requests" ON public.deposit_requests;
-
-DROP POLICY IF EXISTS "Withdraw requests viewable by owner and admin" ON public.withdraw_requests;
-DROP POLICY IF EXISTS "Authenticated users can request withdraw" ON public.withdraw_requests;
-DROP POLICY IF EXISTS "Admins can update withdraw requests" ON public.withdraw_requests;
-DROP POLICY IF EXISTS "Admins can delete withdraw requests" ON public.withdraw_requests;
-
-DROP POLICY IF EXISTS "Ads are viewable by everyone" ON public.ads;
-DROP POLICY IF EXISTS "Authenticated users can create ads" ON public.ads;
-DROP POLICY IF EXISTS "Admins can update ads" ON public.ads;
-DROP POLICY IF EXISTS "Admins and owners can delete ads" ON public.ads;
-
-DROP POLICY IF EXISTS "Email notifications viewable by everyone" ON public.email_notifications;
-DROP POLICY IF EXISTS "Authenticated can insert email notifications" ON public.email_notifications;
-DROP POLICY IF EXISTS "Admins can update email notifications" ON public.email_notifications;
-DROP POLICY IF EXISTS "Admins can delete email notifications" ON public.email_notifications;
-
-DROP POLICY IF EXISTS "Settings are viewable by everyone" ON public.settings;
-DROP POLICY IF EXISTS "Admins can insert settings" ON public.settings;
-DROP POLICY IF EXISTS "Admins can update settings" ON public.settings;
-DROP POLICY IF EXISTS "Admins can delete settings" ON public.settings;
-
-DROP POLICY IF EXISTS "Site settings are viewable by everyone" ON public.site_settings;
-DROP POLICY IF EXISTS "Admins can insert site settings" ON public.site_settings;
-DROP POLICY IF EXISTS "Admins can update site settings" ON public.site_settings;
-DROP POLICY IF EXISTS "Admins can delete site settings" ON public.site_settings;
+-- Dynamically drop ALL existing RLS policies on app tables (prevents legacy restrictive policies from lingering)
+DO $$
+DECLARE
+  pol RECORD;
+BEGIN
+  FOR pol IN
+    SELECT schemaname, tablename, policyname
+    FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename IN (
+        'users',
+        'jobs',
+        'submissions',
+        'deposit_requests',
+        'withdraw_requests',
+        'ads',
+        'email_notifications',
+        'settings',
+        'site_settings'
+      )
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I;', pol.policyname, pol.schemaname, pol.tablename);
+  END LOOP;
+END $$;
 
 -- USERS POLICIES
 CREATE POLICY "Public users are viewable by everyone"
   ON public.users FOR SELECT USING (true);
 
 CREATE POLICY "Users can insert their own profile"
-  ON public.users FOR INSERT WITH CHECK (auth.uid()::text = id::text OR public.is_admin() OR auth.role() IN ('authenticated', 'anon'));
+  ON public.users FOR INSERT WITH CHECK (auth.uid()::text = id::text OR public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() IN ('authenticated', 'anon'));
 
 CREATE POLICY "Users can update own profile or admins update all"
-  ON public.users FOR UPDATE USING (auth.uid()::text = id::text OR public.is_admin() OR auth.role() = 'authenticated') WITH CHECK (true);
+  ON public.users FOR UPDATE USING (auth.uid()::text = id::text OR public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated') WITH CHECK (true);
 
 CREATE POLICY "Admins can delete users"
-  ON public.users FOR DELETE USING (public.is_admin() OR auth.role() = 'authenticated');
+  ON public.users FOR DELETE USING (public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated');
 
 -- JOBS POLICIES
 CREATE POLICY "Jobs are viewable by everyone"
   ON public.jobs FOR SELECT USING (true);
 
 CREATE POLICY "Authenticated users can create jobs"
-  ON public.jobs FOR INSERT WITH CHECK (auth.role() = 'authenticated' OR public.is_admin());
+  ON public.jobs FOR INSERT WITH CHECK (auth.uid() IS NOT NULL OR auth.role() = 'authenticated' OR public.is_admin());
 
 CREATE POLICY "Job owners and admins can update jobs"
-  ON public.jobs FOR UPDATE USING (auth.uid()::text = owner_id::text OR auth.uid()::text = employer_id::text OR public.is_admin() OR auth.role() = 'authenticated') WITH CHECK (true);
+  ON public.jobs FOR UPDATE USING (auth.uid()::text = owner_id::text OR auth.uid()::text = employer_id::text OR public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated') WITH CHECK (true);
 
 CREATE POLICY "Job owners and admins can delete jobs"
-  ON public.jobs FOR DELETE USING (auth.uid()::text = owner_id::text OR auth.uid()::text = employer_id::text OR public.is_admin() OR auth.role() = 'authenticated');
+  ON public.jobs FOR DELETE USING (auth.uid()::text = owner_id::text OR auth.uid()::text = employer_id::text OR public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated');
 
 -- SUBMISSIONS POLICIES
 CREATE POLICY "Submissions are viewable by worker, job owner, and admin"
   ON public.submissions FOR SELECT USING (true);
 
 CREATE POLICY "Authenticated users can submit proofs"
-  ON public.submissions FOR INSERT WITH CHECK (auth.role() = 'authenticated' OR public.is_admin());
+  ON public.submissions FOR INSERT WITH CHECK (auth.uid() IS NOT NULL OR auth.role() = 'authenticated' OR public.is_admin());
 
 CREATE POLICY "Admins and job owners can update submissions"
-  ON public.submissions FOR UPDATE USING (public.is_admin() OR auth.role() = 'authenticated') WITH CHECK (true);
+  ON public.submissions FOR UPDATE USING (public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated') WITH CHECK (true);
 
 CREATE POLICY "Admins can delete submissions"
-  ON public.submissions FOR DELETE USING (public.is_admin() OR auth.role() = 'authenticated');
+  ON public.submissions FOR DELETE USING (public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated');
 
 -- DEPOSIT REQUESTS POLICIES
 CREATE POLICY "Deposit requests viewable by owner and admin"
-  ON public.deposit_requests FOR SELECT USING (auth.uid()::text = user_id::text OR public.is_admin() OR auth.role() = 'authenticated');
+  ON public.deposit_requests FOR SELECT USING (auth.uid()::text = user_id::text OR public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated');
 
 CREATE POLICY "Authenticated users can request deposit"
-  ON public.deposit_requests FOR INSERT WITH CHECK (auth.role() = 'authenticated' OR public.is_admin());
+  ON public.deposit_requests FOR INSERT WITH CHECK (auth.uid() IS NOT NULL OR auth.role() = 'authenticated' OR public.is_admin());
 
 CREATE POLICY "Admins can update deposit requests"
-  ON public.deposit_requests FOR UPDATE USING (public.is_admin() OR auth.role() = 'authenticated') WITH CHECK (true);
+  ON public.deposit_requests FOR UPDATE USING (public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated') WITH CHECK (true);
 
 CREATE POLICY "Admins can delete deposit requests"
-  ON public.deposit_requests FOR DELETE USING (public.is_admin() OR auth.role() = 'authenticated');
+  ON public.deposit_requests FOR DELETE USING (public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated');
 
 -- WITHDRAW REQUESTS POLICIES
 CREATE POLICY "Withdraw requests viewable by owner and admin"
-  ON public.withdraw_requests FOR SELECT USING (auth.uid()::text = user_id::text OR public.is_admin() OR auth.role() = 'authenticated');
+  ON public.withdraw_requests FOR SELECT USING (auth.uid()::text = user_id::text OR public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated');
 
 CREATE POLICY "Authenticated users can request withdraw"
-  ON public.withdraw_requests FOR INSERT WITH CHECK (auth.role() = 'authenticated' OR public.is_admin());
+  ON public.withdraw_requests FOR INSERT WITH CHECK (auth.uid() IS NOT NULL OR auth.role() = 'authenticated' OR public.is_admin());
 
 CREATE POLICY "Admins can update withdraw requests"
-  ON public.withdraw_requests FOR UPDATE USING (public.is_admin() OR auth.role() = 'authenticated') WITH CHECK (true);
+  ON public.withdraw_requests FOR UPDATE USING (public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated') WITH CHECK (true);
 
 CREATE POLICY "Admins can delete withdraw requests"
-  ON public.withdraw_requests FOR DELETE USING (public.is_admin() OR auth.role() = 'authenticated');
+  ON public.withdraw_requests FOR DELETE USING (public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated');
 
 -- ADS POLICIES
 CREATE POLICY "Ads are viewable by everyone"
   ON public.ads FOR SELECT USING (true);
 
 CREATE POLICY "Authenticated users can create ads"
-  ON public.ads FOR INSERT WITH CHECK (auth.role() = 'authenticated' OR public.is_admin());
+  ON public.ads FOR INSERT WITH CHECK (auth.uid() IS NOT NULL OR auth.role() = 'authenticated' OR public.is_admin());
 
 CREATE POLICY "Admins can update ads"
-  ON public.ads FOR UPDATE USING (auth.uid()::text = owner_id::text OR auth.uid()::text = user_id::text OR public.is_admin() OR auth.role() = 'authenticated') WITH CHECK (true);
+  ON public.ads FOR UPDATE USING (auth.uid()::text = owner_id::text OR auth.uid()::text = user_id::text OR public.is_admin() OR auth.uid() IS NOT NULL OR auth.role() = 'authenticated') WITH CHECK (true);
 
 CREATE POLICY "Admins and owners can delete ads"
   ON public.ads FOR DELETE USING (auth.uid()::text = owner_id::text OR auth.uid()::text = user_id::text OR public.is_admin() OR auth.role() = 'authenticated');
@@ -573,4 +678,59 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.site_settings;
   EXCEPTION WHEN OTHERS THEN NULL; END;
 END $$;
+
+-- ==============================================================================
+-- 12. STORAGE BUCKET ('uploads') & SYNC OCCUPIED SLOTS
+-- ==============================================================================
+DO $$
+BEGIN
+  INSERT INTO storage.buckets (id, name, public)
+  VALUES ('uploads', 'uploads', true)
+  ON CONFLICT (id) DO UPDATE SET public = true;
+EXCEPTION
+  WHEN OTHERS THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  DROP POLICY IF EXISTS "Public read uploads" ON storage.objects;
+  DROP POLICY IF EXISTS "Authenticated upload uploads" ON storage.objects;
+  DROP POLICY IF EXISTS "Authenticated delete uploads" ON storage.objects;
+
+  CREATE POLICY "Public read uploads"
+    ON storage.objects FOR SELECT USING (bucket_id = 'uploads');
+
+  CREATE POLICY "Authenticated upload uploads"
+    ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'uploads' AND (auth.uid() IS NOT NULL OR auth.role() = 'authenticated'));
+
+  CREATE POLICY "Authenticated delete uploads"
+    ON storage.objects FOR DELETE USING (bucket_id = 'uploads' AND (auth.uid() IS NOT NULL OR auth.role() = 'authenticated'));
+EXCEPTION
+  WHEN OTHERS THEN NULL;
+END $$;
+
+-- Resync jobs.occupied_slots from actual non-rejected rows in public.submissions
+UPDATE public.jobs j
+SET occupied_slots = (
+  SELECT COUNT(*)
+  FROM public.submissions s
+  WHERE s.job_id::text = j.id::text
+    AND s.status <> 'rejected'
+),
+status = CASE
+  WHEN j.status = 'completed' AND (
+    SELECT COUNT(*)
+    FROM public.submissions s
+    WHERE s.job_id::text = j.id::text
+      AND s.status <> 'rejected'
+  ) < j.total_slots THEN 'active'
+  ELSE j.status
+END;
+
+-- Permanently remove proof screenshot references from already-reviewed submissions
+UPDATE public.submissions
+SET proof_screenshot_url = NULL,
+    proof_file_url = NULL
+WHERE status IN ('approved', 'rejected')
+  AND (proof_screenshot_url IS NOT NULL OR proof_file_url IS NOT NULL);
 

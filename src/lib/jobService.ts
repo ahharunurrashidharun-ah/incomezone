@@ -13,7 +13,7 @@ import {
   saveLocalUser,
   saveLocalNotification,
 } from './localFallbackStore';
-import { attachImageToDescription } from './jobImages';
+import { attachImageToDescription, parseProofScreenshots } from './jobImages';
 import { queueEmailNotification } from './notificationSender';
 import { sendJobSubmissionAlert, sendJobPostedAlert } from '../utils/telegramNotifier';
 
@@ -80,6 +80,21 @@ export async function uploadFile(file: File, folder = 'proofs'): Promise<string>
 }
 
 /**
+ * Ensures the Supabase client has an active authenticated JWT before running RLS-protected writes.
+ */
+async function ensureAuthenticatedSession(): Promise<void> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (sessionData?.session?.user) return;
+
+  try {
+    const { data: refreshed } = await supabase.auth.refreshSession();
+    if (refreshed?.session?.user) return;
+  } catch {}
+
+  throw new Error('আপনার লগইন সেশনের মেয়াদ শেষ হয়ে গেছে। অনুগ্রহ করে পুনরায় Login করুন।');
+}
+
+/**
  * Posts a new job by deducting the total budget from user's deposit balance
  * and inserting the job in 'pending' status for admin approval.
  */
@@ -105,16 +120,22 @@ export async function postJob(jobData: JobData): Promise<string> {
       const localUser = getLocalUser(ownerId);
       currentBalance = Number(localUser?.deposit_balance || 0);
       try {
+        const { data: authUserWrap } = await supabase.auth.getUser();
+        const authUser = authUserWrap?.user;
+        const emailVal = authUser?.email || `${ownerId}@incomezone.app`;
+        const baseUsername = (authUser?.user_metadata?.username || emailVal.split('@')[0] || 'user').replace(/[^a-zA-Z0-9_]/g, '') || 'user';
         await supabase.from('users').upsert({
           id: ownerId,
-          email: `${ownerId}@incomezone.app`,
-          name: 'User',
-          username: 'user',
+          email: emailVal,
+          name: authUser?.user_metadata?.name || baseUsername,
+          username: `${baseUsername}_${ownerId.slice(0, 6)}`,
           deposit_balance: currentBalance,
           earning_balance: 0,
           role: 'user',
           is_locked: false,
-        });
+          status: 'active',
+          is_pending: false,
+        }, { onConflict: 'id' });
       } catch {}
     }
 
@@ -162,23 +183,21 @@ export async function postJob(jobData: JobData): Promise<string> {
     }
 
     let insertedJob: any = null;
-    try {
-      const { data, error: jobError } = await supabase
-        .from('jobs')
-        .insert(jobPayload)
-        .select('id')
-        .maybeSingle();
+    let lastJobError: any = null;
+    const { data, error: jobError } = await supabase
+      .from('jobs')
+      .insert(jobPayload)
+      .select('id')
+      .maybeSingle();
 
-      if (!jobError && data) {
-        insertedJob = data;
-      }
-    } catch (insertCatch) {
-      console.warn('Initial rich job insert notice, retrying core fields or local:', insertCatch);
-    }
-
-    // If initial insert had schema columns missing, retry with fields included
-    if (!insertedJob) {
-      try {
+    if (!jobError && data) {
+      insertedJob = data;
+    } else if (jobError) {
+      lastJobError = jobError;
+      if (isTableMissingError(jobError)) {
+        // Fallback to local storage only when table does not exist
+      } else {
+        // Retry core columns if optional columns like text_proof_requirement don't exist
         const fallbackPayload: any = {
           title: jobData.title,
           description: descWithThumbnail,
@@ -199,19 +218,34 @@ export async function postJob(jobData: JobData): Promise<string> {
           fallbackPayload.image_url = imgUrl;
         }
 
-        const { data, error: fallbackError } = await supabase
+        const { data: fbData, error: fallbackError } = await supabase
           .from('jobs')
           .insert(fallbackPayload)
           .select('id')
           .maybeSingle();
 
-        if (!fallbackError && data) {
-          insertedJob = data;
+        if (!fallbackError && fbData) {
+          insertedJob = fbData;
+          lastJobError = null;
+        } else if (fallbackError) {
+          lastJobError = fallbackError;
         }
-      } catch {}
+      }
     }
 
-    // Fallback to local store
+    // If Supabase returned a real error (not missing table), rollback deducted balance and throw!
+    if (!insertedJob && lastJobError && !isTableMissingError(lastJobError)) {
+      try {
+        await supabase
+          .from('users')
+          .update({ deposit_balance: currentBalance })
+          .eq('id', ownerId);
+        saveLocalUser(ownerId, { deposit_balance: currentBalance });
+      } catch {}
+      throw new Error(`ডাটাবেজে জব সেভ হয়নি: ${lastJobError.message}`);
+    }
+
+    // Save to local cache for immediate local consistency
     const localSaved = saveLocalJob({
       id: insertedJob?.id,
       title: jobData.title,
@@ -263,11 +297,14 @@ export async function postJob(jobData: JobData): Promise<string> {
       throw new Error("Insufficient Deposit Balance");
     }
 
+    if (!isTableMissingError(err)) {
+      throw err;
+    }
+
     const textProofInst = jobData.text_proof_instruction || jobData.textProofInstruction || jobData.textProofRequirement || '';
     const screenshotInsts = jobData.screenshot_instructions || jobData.screenshotInstructions || [];
     const descWithThumbnail = attachImageToDescription(jobData.description, imgUrl);
 
-    // Unconditional fallback so job creation NEVER fails
     const newJob = saveLocalJob({
       title: jobData.title,
       category: jobData.category,
@@ -288,18 +325,6 @@ export async function postJob(jobData: JobData): Promise<string> {
       status: 'pending',
     });
 
-    saveLocalNotification(ownerId, {
-      title: 'নতুন জব জমা হয়েছে! ⏳',
-      message: `আপনার নতুন জব "${jobData.title}" সফলভাবে পর্যালোচনার জন্য জমা হয়েছে। অ্যাডমিন অনুমোদন দিলে এটি সরাসরি লাইভ হবে।`,
-      type: 'announcement',
-    });
-
-    queueEmailNotification({
-      subject: `[IncomeZone] New Job Submitted: ${jobData.title}`,
-      message: `A new job has been submitted for review on IncomeZone.\n\nTitle: ${jobData.title}\nCategory: ${jobData.category}\nSlots: ${jobData.totalSlots}\nPrice/Task: $${Number(jobData.pricePerTask).toFixed(2)}\nTotal Budget: $${totalCost.toFixed(2)}\nEmployer ID: ${ownerId}\n\nPlease review and approve it from the Admin Panel.`,
-      type: 'job_post',
-    });
-
     return newJob.id;
   }
 }
@@ -311,12 +336,14 @@ export const createJob = postJob;
  */
 export async function submitJob(subData: SubmissionData): Promise<string> {
   try {
+    await ensureAuthenticatedSession();
+
     // 1. Fetch job to verify slot availability
     const { data: job, error: jobError } = await supabase
       .from('jobs')
       .select('*')
       .eq('id', subData.jobId)
-      .single();
+      .maybeSingle();
 
     if (jobError && isTableMissingError(jobError)) {
       // Local fallback
@@ -348,6 +375,10 @@ export async function submitJob(subData: SubmissionData): Promise<string> {
       return newSub.id;
     }
 
+    if (jobError) {
+      throw new Error(`জবের তথ্য লোড করা যায়নি: ${jobError.message}`);
+    }
+
     if (!job) {
       throw new Error('Job not found.');
     }
@@ -359,110 +390,170 @@ export async function submitJob(subData: SubmissionData): Promise<string> {
       throw new Error('This job has no available slots left.');
     }
 
-    // 1. Check if user already submitted locally
-    const localSubs = getLocalSubmissions();
-    const existingLocal = localSubs.find(
-      (s: any) => (s.job_id === subData.jobId || s.jobId === subData.jobId) &&
-                  (s.worker_id === subData.workerId || s.workerId === subData.workerId)
-    );
-    if (existingLocal) {
+    // 1. Check if user already submitted for this job in Supabase FIRST
+    const workerIdsToCheck = Array.from(new Set([subData.workerId, toValidUUID(subData.workerId)].filter(Boolean)));
+    const { data: existingRows, error: existingCheckErr } = await supabase
+      .from('submissions')
+      .select('id')
+      .eq('job_id', subData.jobId)
+      .in('worker_id', workerIdsToCheck)
+      .limit(1);
+
+    if (existingCheckErr && isTableMissingError(existingCheckErr)) {
+      const existingLocal = getLocalSubmissions().find(
+        (s: any) => (s.job_id === subData.jobId || s.jobId === subData.jobId) &&
+                    (workerIdsToCheck.includes(s.worker_id) || workerIdsToCheck.includes(s.workerId))
+      );
+      if (existingLocal) {
+        throw new Error('আপনি ইতিমধ্যে এই জবের জন্য প্রুফ সাবমিট করেছেন! একই জব একাধিকবার সাবমিট করা যাবে না।');
+      }
+    } else if (existingCheckErr) {
+      throw new Error(`সাবমিশন যাচাই করা যায়নি: ${existingCheckErr.message}`);
+    } else if (existingRows && existingRows.length > 0) {
       throw new Error('আপনি ইতিমধ্যে এই জবের জন্য প্রুফ সাবমিট করেছেন! একই জব একাধিকবার সাবমিট করা যাবে না।');
     }
 
-    // 2. Check if user already submitted for this job in Supabase
-    try {
-      const { data: existingSub } = await supabase
-        .from('submissions')
-        .select('id')
-        .eq('job_id', subData.jobId)
-        .eq('worker_id', subData.workerId)
-        .maybeSingle();
-
-      if (existingSub) {
-        throw new Error('আপনি ইতিমধ্যে এই জবের জন্য প্রুফ সাবমিট করেছেন! একই জব একাধিকবার সাবমিট করা যাবে না।');
-      }
-    } catch (checkErr: any) {
-      if (checkErr?.message?.includes('ইতিমধ্যে') || checkErr?.message?.includes('already')) {
-        throw checkErr;
-      }
-    }
-
-    // 3. Create submission record
-    const primaryScreenshotUrl = subData.proofScreenshotUrl || (subData.proofScreenshotUrls && subData.proofScreenshotUrls[0]) || null;
-    const allScreenshots = subData.proofScreenshotUrls && subData.proofScreenshotUrls.length > 0 
-      ? subData.proofScreenshotUrls 
-      : (primaryScreenshotUrl ? [primaryScreenshotUrl] : []);
+    // 2. Encode single or multiple screenshots so ALL screenshots persist cleanly in proof_screenshot_url
+    const rawScreenshots = (subData.proofScreenshotUrls && subData.proofScreenshotUrls.length > 0
+      ? subData.proofScreenshotUrls
+      : (subData.proofScreenshotUrl ? [subData.proofScreenshotUrl] : [])
+    ).filter(Boolean);
+    const primaryScreenshotUrl = rawScreenshots[0] || null;
+    const encodedScreenshotValue = rawScreenshots.length > 1
+      ? JSON.stringify(rawScreenshots)
+      : primaryScreenshotUrl;
+    const allScreenshots = rawScreenshots;
 
     let newSubId: string = '';
     const resolvedWorkerDisplayId = subData.workerDisplayId ? String(subData.workerDisplayId) : undefined;
 
-    try {
-      const insertData: any = {
-        job_id: subData.jobId,
-        worker_id: subData.workerId,
-        proof_text: subData.proofText,
-        proof_screenshot_url: primaryScreenshotUrl,
-        status: 'pending',
-      };
-      if (resolvedWorkerDisplayId) {
-        insertData.worker_display_id = resolvedWorkerDisplayId;
+    const insertData: any = {
+      job_id: subData.jobId,
+      worker_id: subData.workerId,
+      proof_text: subData.proofText,
+      proof_screenshot_url: encodedScreenshotValue,
+      status: 'pending',
+    };
+    if (resolvedWorkerDisplayId) {
+      insertData.worker_display_id = resolvedWorkerDisplayId;
+    }
+
+    const { data: newSub, error: subError } = await supabase
+      .from('submissions')
+      .insert(insertData)
+      .select('id')
+      .single();
+
+    if (subError) {
+      if (subError.code === '23505' || subError.message?.toLowerCase().includes('duplicate') || subError.message?.toLowerCase().includes('unique')) {
+        throw new Error('আপনি ইতিমধ্যে এই জবের জন্য প্রুফ সাবমিট করেছেন! একই জব একাধিকবার সাবমিট করা যাবে না।');
+      }
+      if (isTableMissingError(subError)) {
+        throw subError;
       }
 
-      const { data: newSub, error: subError } = await supabase
-        .from('submissions')
-        .insert(insertData)
-        .select('id')
-        .single();
+      const msgLower = (subError.message || '').toLowerCase();
 
-      if (subError) {
-        if (subError.code === '23505' || subError.message?.toLowerCase().includes('duplicate') || subError.message?.toLowerCase().includes('unique')) {
-          throw new Error('আপনি ইতিমধ্যে এই জবের জন্য প্রুফ সাবমিট করেছেন! একই জব একাধিকবার সাবমিট করা যাবে না।');
+      if (msgLower.includes('tg_schema_name')) {
+        throw new Error('প্রুফ ডাটাবেজে সেভ হয়নি: ডাটাবেজের একটি পুরনো/ত্রুটিপূর্ণ ট্রিগারে (column "tg_schema_name" does not exist) সমস্যা রয়েছে। অনুগ্রহ করে প্রদত্ত SQL কোডটি Supabase SQL Editor-এ রান করুন।');
+      }
+
+      // Auto-repair missing public.users row if FK constraint on worker_id triggers (23503)
+      if (subError.code === '23503' || msgLower.includes('foreign key') || msgLower.includes('worker_id')) {
+        try {
+          const { data: authWrap } = await supabase.auth.getUser();
+          const authUser = authWrap?.user;
+          if (authUser && authUser.id === subData.workerId) {
+            const emailVal = authUser.email || `${authUser.id}@incomezone.app`;
+            const baseUser = (authUser.user_metadata?.username || emailVal.split('@')[0] || 'user').replace(/[^a-zA-Z0-9_]/g, '') || 'user';
+            await supabase.from('users').upsert({
+              id: authUser.id,
+              email: emailVal,
+              name: authUser.user_metadata?.name || baseUser,
+              username: `${baseUser}_${authUser.id.slice(0, 6)}`,
+              deposit_balance: 0,
+              earning_balance: 0,
+              role: 'user',
+              status: 'active',
+              is_pending: false,
+              is_locked: false,
+            }, { onConflict: 'id' });
+
+            const { data: fkRetrySub, error: fkRetryErr } = await supabase
+              .from('submissions')
+              .insert(insertData)
+              .select('id')
+              .single();
+
+            if (!fkRetryErr && fkRetrySub) {
+              newSubId = fkRetrySub.id;
+            } else if (fkRetryErr) {
+              if ((fkRetryErr.message || '').toLowerCase().includes('tg_schema_name')) {
+                throw new Error('প্রুফ ডাটাবেজে সেভ হয়নি: ডাটাবেজের একটি পুরনো/ত্রুটিপূর্ণ ট্রিগারে (column "tg_schema_name" does not exist) সমস্যা রয়েছে। অনুগ্রহ করে প্রদত্ত SQL কোডটি Supabase SQL Editor-এ রান করুন।');
+              }
+              throw new Error(`প্রুফ ডাটাবেজে সেভ হয়নি: ${fkRetryErr.message}`);
+            }
+          }
+        } catch (fkCatch: any) {
+          throw new Error(fkCatch?.message || `প্রুফ ডাটাবেজে সেভ হয়নি: ${subError.message}`);
         }
-        if (resolvedWorkerDisplayId) {
-          // Retry without worker_display_id column if table lacks that column
+      }
+
+      if (!newSubId) {
+        // If column worker_display_id does not exist yet in Supabase, retry without it
+        if (resolvedWorkerDisplayId && msgLower.includes('worker_display_id')) {
           const { data: retrySub, error: retryErr } = await supabase
             .from('submissions')
             .insert({
               job_id: subData.jobId,
               worker_id: subData.workerId,
               proof_text: subData.proofText,
-              proof_screenshot_url: primaryScreenshotUrl,
+              proof_screenshot_url: encodedScreenshotValue,
               status: 'pending',
             })
             .select('id')
             .single();
+
           if (retryErr) {
             if (retryErr.code === '23505' || retryErr.message?.toLowerCase().includes('duplicate')) {
               throw new Error('আপনি ইতিমধ্যে এই জবের জন্য প্রুফ সাবমিট করেছেন! একই জব একাধিকবার সাবমিট করা যাবে না।');
             }
+            if ((retryErr.message || '').toLowerCase().includes('tg_schema_name')) {
+              throw new Error('প্রুফ ডাটাবেজে সেভ হয়নি: ডাটাবেজের একটি পুরনো/ত্রুটিপূর্ণ ট্রিগারে (column "tg_schema_name" does not exist) সমস্যা রয়েছে। অনুগ্রহ করে প্রদত্ত SQL কোডটি Supabase SQL Editor-এ রান করুন।');
+            }
+            if (retryErr.code === '42501' || retryErr.message?.toLowerCase().includes('row-level security')) {
+              throw new Error('ডাটাবেজ পারমিশন (RLS) সমস্যার কারণে প্রুফ সেভ হয়নি। অনুগ্রহ করে প্রদত্ত Supabase SQL রান করুন।');
+            }
+            throw new Error(`প্রুফ ডাটাবেজে সেভ হয়নি: ${retryErr.message}`);
           } else if (retrySub) {
             newSubId = retrySub.id;
           }
+        } else {
+          if (subError.code === '42501' || msgLower.includes('row-level security')) {
+            throw new Error('ডাটাবেজ পারমিশন (RLS) সমস্যার কারণে প্রুফ সেভ হয়নি। অনুগ্রহ করে প্রদত্ত Supabase SQL রান করুন।');
+          }
+          throw new Error(`প্রুফ ডাটাবেজে সেভ হয়নি: ${subError.message}`);
         }
-      } else if (newSub) {
-        newSubId = newSub.id;
       }
-    } catch (insertErr: any) {
-      if (insertErr?.message?.includes('ইতিমধ্যে') || insertErr?.message?.includes('already') || insertErr?.code === '23505') {
-        throw insertErr;
-      }
+    } else if (newSub) {
+      newSubId = newSub.id;
     }
 
-    const newLocalSub = saveLocalSubmission({
+    if (!newSubId) {
+      throw new Error('প্রুফ ডাটাবেজে সেভ করা যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।');
+    }
+
+    saveLocalSubmission({
       id: newSubId,
       job_id: subData.jobId,
       worker_id: subData.workerId,
       worker_display_id: resolvedWorkerDisplayId,
       workerDisplayId: resolvedWorkerDisplayId,
       proof_text: subData.proofText,
-      proof_screenshot_url: primaryScreenshotUrl,
+      proof_screenshot_url: encodedScreenshotValue,
       proof_screenshot_urls: allScreenshots,
       status: 'pending',
     });
-
-    if (!newSubId) {
-      newSubId = newLocalSub.id;
-    }
 
     try {
       window.dispatchEvent(new CustomEvent('submission_updated', {
@@ -474,13 +565,17 @@ export async function submitJob(subData: SubmissionData): Promise<string> {
     const newOccupied = occupiedSlots + 1;
     const isNowCompleted = newOccupied >= totalSlots;
 
-    await supabase
+    const { error: slotUpdateErr } = await supabase
       .from('jobs')
       .update({
         occupied_slots: newOccupied,
         ...(isNowCompleted ? { status: 'completed' } : {}),
       })
       .eq('id', subData.jobId);
+
+    if (slotUpdateErr) {
+      console.warn('Could not update job occupied_slots:', slotUpdateErr.message);
+    }
 
     const jobTitle = job?.title || 'Micro-Job';
     const jobOwnerId = job?.owner_id || job?.employer_id;
@@ -579,11 +674,39 @@ export async function submitJobProof(
   });
 }
 
+async function deleteSubmissionScreenshotsFromStorage(subRecord: any): Promise<void> {
+  if (!subRecord) return;
+  const urls = parseProofScreenshots(subRecord);
+  const filePaths = urls
+    .map((url: string) => {
+      const str = String(url || '').trim();
+      if (!str || str.startsWith('data:')) return null;
+      const parts = str.split('/uploads/');
+      if (parts.length <= 1) return null;
+      const cleanPath = parts[1].split('?')[0].split('#')[0];
+      try {
+        return decodeURIComponent(cleanPath);
+      } catch {
+        return cleanPath;
+      }
+    })
+    .filter(Boolean) as string[];
+
+  if (filePaths.length > 0) {
+    try {
+      await supabase.storage.from('uploads').remove(filePaths);
+    } catch {}
+  }
+}
+
 /**
  * Employer approves a worker's submission:
- * Marks submission approved and adds reward to worker's earning balance.
+ * Marks submission approved, permanently deletes proof screenshots from DB & storage,
+ * and adds reward to worker's earning balance.
  */
 export async function approveSubmission(submissionId: string, jobId: string, workerId: string): Promise<void> {
+  await ensureAuthenticatedSession();
+
   // 1. Determine reward based on job price
   let reward = 0;
   try {
@@ -603,15 +726,26 @@ export async function approveSubmission(submissionId: string, jobId: string, wor
     reward = Number(localJob?.price_per_task || 0.25);
   }
 
-  // 2. Fetch current submission and mark submission as approved in Postgres
+  // 2. Fetch current submission and worker balance BEFORE changing submission status
   const { data: currentSub, error: fetchSubErr } = await supabase
     .from('submissions')
-    .select('id, status, proof_screenshot_url, worker_id')
+    .select('*')
     .eq('id', submissionId)
     .maybeSingle();
 
+  let newEarnings = reward;
+  const targetWorkerId = (currentSub?.worker_id || workerId);
+
   if (fetchSubErr && isTableMissingError(fetchSubErr)) {
-    updateLocalSubmission(submissionId, { status: 'approved', reviewed_at: new Date().toISOString() }, jobId, workerId);
+    updateLocalSubmission(submissionId, {
+      status: 'approved',
+      reviewed_at: new Date().toISOString(),
+      proof_screenshot_url: null,
+      proof_screenshot_urls: [],
+      proof_file_url: null,
+    }, jobId, targetWorkerId);
+    const localWorker = getLocalUser(targetWorkerId);
+    newEarnings = Number((Number(localWorker?.earning_balance || 0) + reward).toFixed(2));
   } else {
     if (fetchSubErr) {
       throw new Error(`সাবমিশন তথ্য লোড করা যায়নি: ${fetchSubErr.message}`);
@@ -623,86 +757,106 @@ export async function approveSubmission(submissionId: string, jobId: string, wor
       throw new Error('এই সাবমিশনটি ইতিমধ্যে অ্যাপ্রুভ বা রিজেক্ট করা হয়ে গেছে!');
     }
 
+    const { data: worker, error: workerFetchErr } = await supabase
+      .from('users')
+      .select('id, earning_balance')
+      .eq('id', targetWorkerId)
+      .maybeSingle();
+
+    if (workerFetchErr && !isTableMissingError(workerFetchErr)) {
+      throw new Error(`কর্মীর আর্নিং ব্যালেন্স লোড করা যায়নি: ${workerFetchErr.message}`);
+    }
+
+    if (!worker && !isTableMissingError(workerFetchErr || {})) {
+      throw new Error('কর্মীর অ্যাকাউন্ট ডাটাবেজে পাওয়া যায়নি। তাই ব্যালেন্স যোগ করা সম্ভব হয়নি।');
+    }
+
+    const currentEarnings = worker
+      ? Number(worker.earning_balance ?? 0)
+      : Number(getLocalUser(targetWorkerId)?.earning_balance || 0);
+    newEarnings = Number((currentEarnings + reward).toFixed(2));
+
+    const hasProofFileUrlCol = Object.prototype.hasOwnProperty.call(currentSub, 'proof_file_url');
+    const approvePayload: any = {
+      status: 'approved',
+      reviewed_at: new Date().toISOString(),
+      proof_screenshot_url: null,
+      ...(hasProofFileUrlCol ? { proof_file_url: null } : {}),
+    };
+
     const { data: updatedSub, error: updateSubErr } = await supabase
       .from('submissions')
-      .update({ status: 'approved', reviewed_at: new Date().toISOString() })
+      .update(approvePayload)
       .eq('id', submissionId)
+      .eq('status', 'pending')
       .select('id, status')
       .maybeSingle();
 
     if (updateSubErr) {
       if (isTableMissingError(updateSubErr)) {
-        updateLocalSubmission(submissionId, { status: 'approved', reviewed_at: new Date().toISOString() }, jobId, workerId);
+        updateLocalSubmission(submissionId, {
+          status: 'approved',
+          reviewed_at: new Date().toISOString(),
+          proof_screenshot_url: null,
+          proof_screenshot_urls: [],
+          proof_file_url: null,
+        }, jobId, targetWorkerId);
       } else {
         throw new Error(`ডাটাবেজে সাবমিশন অ্যাপ্রুভ করা যায়নি: ${updateSubErr.message}`);
       }
     } else if (!updatedSub || updatedSub.status !== 'approved') {
-      throw new Error('ডাটাবেজ পারমিশন (RLS) সমস্যার কারণে স্ট্যাটাস আপডেট হয়নি। অনুগ্রহ করে প্রদত্ত Supabase SQL রান করুন।');
+      throw new Error('এই সাবমিশনটি ইতিমধ্যে অ্যাপ্রুভ বা রিজেক্ট করা হয়েছে অথবা ডাটাবেজ পারমিশন (RLS) সমস্যা রয়েছে।');
     }
 
-    if (currentSub.proof_screenshot_url) {
-      let urls: string[] = [];
-      try {
-        urls = JSON.parse(currentSub.proof_screenshot_url);
-      } catch {
-        urls = [currentSub.proof_screenshot_url];
-      }
+    // Credit worker's earning balance reliably; rollback submission if worker balance update is blocked by RLS
+    if (worker) {
+      const { data: updatedWorker, error: balUpdateErr } = await supabase
+        .from('users')
+        .update({ earning_balance: newEarnings })
+        .eq('id', targetWorkerId)
+        .select('id, earning_balance')
+        .maybeSingle();
 
-      const filePaths = (Array.isArray(urls) ? urls : [urls])
-        .map((url: string) => {
-          const parts = String(url || '').split('/uploads/');
-          return parts.length > 1 ? parts[1] : null;
-        })
-        .filter(Boolean);
-
-      if (filePaths.length > 0) {
+      if ((balUpdateErr && !isTableMissingError(balUpdateErr)) || (!balUpdateErr && !updatedWorker)) {
         try {
-          await supabase.storage.from('uploads').remove(filePaths as string[]);
+          await supabase
+            .from('submissions')
+            .update({
+              status: 'pending',
+              reviewed_at: null,
+              proof_screenshot_url: currentSub.proof_screenshot_url ?? null,
+              ...(hasProofFileUrlCol ? { proof_file_url: currentSub.proof_file_url ?? null } : {}),
+            })
+            .eq('id', submissionId);
         } catch {}
+        throw new Error(
+          balUpdateErr
+            ? `কর্মীর অ্যাকাউন্টে টাকা যোগ হয়নি: ${balUpdateErr.message}`
+            : 'ডাটাবেজ পারমিশন (RLS) সমস্যার কারণে কর্মীর ব্যালেন্স আপডেট হয়নি।'
+        );
       }
     }
 
-    updateLocalSubmission(submissionId, { status: 'approved', reviewed_at: new Date().toISOString() }, jobId, workerId);
-  }
+    await deleteSubmissionScreenshotsFromStorage(currentSub);
 
-  // 3. Credit worker's earning balance reliably
-  let currentEarnings = 0;
-  const { data: worker, error: workerFetchErr } = await supabase
-    .from('users')
-    .select('earning_balance')
-    .eq('id', workerId)
-    .maybeSingle();
-
-  if (worker && !workerFetchErr) {
-    currentEarnings = Number(worker.earning_balance || 0);
-  } else {
-    const localWorker = getLocalUser(workerId);
-    currentEarnings = Number(localWorker?.earning_balance || 0);
-  }
-
-  const newEarnings = Number((currentEarnings + reward).toFixed(2));
-
-  // Update Supabase worker balance if worker record exists
-  if (worker) {
-    const { error: balUpdateErr } = await supabase
-      .from('users')
-      .update({ earning_balance: newEarnings })
-      .eq('id', workerId);
-
-    if (balUpdateErr && !isTableMissingError(balUpdateErr)) {
-      console.warn('Worker earning balance DB update warning:', balUpdateErr);
-    }
+    updateLocalSubmission(submissionId, {
+      status: 'approved',
+      reviewed_at: new Date().toISOString(),
+      proof_screenshot_url: null,
+      proof_screenshot_urls: [],
+      proof_file_url: null,
+    }, jobId, targetWorkerId);
   }
 
   // Update local store
-  saveLocalUser(workerId, { earning_balance: newEarnings });
+  saveLocalUser(targetWorkerId, { earning_balance: newEarnings });
 
   // Update stored session if worker is on this device
   try {
     const rawSession = localStorage.getItem('iz_auth_session');
     if (rawSession) {
       const sess = JSON.parse(rawSession);
-      if (sess?.user?.uid === workerId || sess?.profile?.id === workerId) {
+      if (sess?.user?.uid === targetWorkerId || sess?.profile?.id === targetWorkerId) {
         sess.user.earningBalance = newEarnings;
         sess.profile.earningBalance = newEarnings;
         localStorage.setItem('iz_auth_session', JSON.stringify(sess));
@@ -711,7 +865,7 @@ export async function approveSubmission(submissionId: string, jobId: string, wor
   } catch {}
 
   // Dispatch balance update & user notification
-  saveLocalNotification(workerId, {
+  saveLocalNotification(targetWorkerId, {
     title: 'টাস্ক অ্যাপ্রুভড! 🏆',
     message: `আপনার সাবমিট করা জবের কাজটির প্রমাণপত্র সফলভাবে অ্যাপ্রুভ করা হয়েছে এবং $${reward.toFixed(2)} (৳${Math.round(reward * 100)}) আর্নিং ব্যালেন্স ওয়ালেটে জমা হয়েছে।`,
     type: 'submission',
@@ -719,7 +873,7 @@ export async function approveSubmission(submissionId: string, jobId: string, wor
 
   setTimeout(() => {
     window.dispatchEvent(new CustomEvent('iz_balance_updated', {
-      detail: { userId: workerId, earningBalance: newEarnings }
+      detail: { userId: targetWorkerId, earningBalance: newEarnings }
     }));
     window.dispatchEvent(new CustomEvent('submission_updated', { detail: { jobId, submissionId, status: 'approved' } }));
     window.dispatchEvent(new CustomEvent('iz_users_updated'));
@@ -728,18 +882,27 @@ export async function approveSubmission(submissionId: string, jobId: string, wor
 
 /**
  * Employer rejects a submission:
- * Marks submission rejected and reopens a slot on the job.
+ * Marks submission rejected, permanently deletes proof screenshots from DB & storage,
+ * and reopens a slot on the job.
  */
 export async function rejectSubmission(submissionId: string, jobId: string, reason?: string): Promise<void> {
   try {
+    await ensureAuthenticatedSession();
+
     const { data: currentSub, error: fetchErr } = await supabase
       .from('submissions')
-      .select('id, status, proof_screenshot_url, worker_id')
+      .select('*')
       .eq('id', submissionId)
       .maybeSingle();
 
     if (fetchErr && isTableMissingError(fetchErr)) {
-      updateLocalSubmission(submissionId, { status: 'rejected', rejection_reason: reason });
+      updateLocalSubmission(submissionId, {
+        status: 'rejected',
+        rejection_reason: reason,
+        proof_screenshot_url: null,
+        proof_screenshot_urls: [],
+        proof_file_url: null,
+      });
       const localJob = getLocalJobs().find((j) => j.id === jobId);
       if (localJob) {
         const newOccupied = Math.max(0, localJob.occupied_slots - 1);
@@ -759,20 +922,30 @@ export async function rejectSubmission(submissionId: string, jobId: string, reas
     }
 
     const workerId = currentSub.worker_id;
+    const hasProofFileUrlCol = Object.prototype.hasOwnProperty.call(currentSub, 'proof_file_url');
 
     const { data: updatedSub, error: subError } = await supabase
       .from('submissions')
       .update({
         status: 'rejected',
         reviewed_at: new Date().toISOString(),
+        proof_screenshot_url: null,
+        ...(hasProofFileUrlCol ? { proof_file_url: null } : {}),
         ...(reason ? { rejection_reason: reason } : {}),
       })
       .eq('id', submissionId)
+      .eq('status', 'pending')
       .select('id, status')
       .maybeSingle();
 
     if (subError && isTableMissingError(subError)) {
-      updateLocalSubmission(submissionId, { status: 'rejected', rejection_reason: reason });
+      updateLocalSubmission(submissionId, {
+        status: 'rejected',
+        rejection_reason: reason,
+        proof_screenshot_url: null,
+        proof_screenshot_urls: [],
+        proof_file_url: null,
+      });
       const localJob = getLocalJobs().find((j) => j.id === jobId);
       if (localJob) {
         const newOccupied = Math.max(0, localJob.occupied_slots - 1);
@@ -786,36 +959,19 @@ export async function rejectSubmission(submissionId: string, jobId: string, reas
     }
 
     if (!updatedSub || updatedSub.status !== 'rejected') {
-      throw new Error('ডাটাবেজ পারমিশন (RLS) সমস্যার কারণে রিজেক্ট সেভ হয়নি। অনুগ্রহ করে প্রদত্ত Supabase SQL রান করুন।');
+      throw new Error('এই সাবমিশনটি ইতিমধ্যে অ্যাপ্রুভ বা রিজেক্ট করা হয়েছে অথবা ডাটাবেজ পারমিশন (RLS) সমস্যা রয়েছে।');
     }
 
-    if (currentSub.proof_screenshot_url) {
-      let urls: string[] = [];
-      try {
-        urls = JSON.parse(currentSub.proof_screenshot_url);
-      } catch {
-        urls = [currentSub.proof_screenshot_url];
-      }
-
-      const filePaths = (Array.isArray(urls) ? urls : [urls])
-        .map((url: string) => {
-          const parts = String(url || '').split('/uploads/');
-          return parts.length > 1 ? parts[1] : null;
-        })
-        .filter(Boolean);
-
-      if (filePaths.length > 0) {
-        try {
-          await supabase.storage.from('uploads').remove(filePaths as string[]);
-        } catch {}
-      }
-    }
+    await deleteSubmissionScreenshotsFromStorage(currentSub);
 
     updateLocalSubmission(submissionId, {
       status: 'rejected',
       reviewed_at: new Date().toISOString(),
+      proof_screenshot_url: null,
+      proof_screenshot_urls: [],
+      proof_file_url: null,
       ...(reason ? { rejection_reason: reason } : {}),
-    }, jobId);
+    }, jobId, workerId);
 
     if (workerId) {
       saveLocalNotification(workerId, {
@@ -851,7 +1007,13 @@ export async function rejectSubmission(submissionId: string, jobId: string, reas
     window.dispatchEvent(new CustomEvent('iz_users_updated'));
   } catch (err) {
     if (isTableMissingError(err)) {
-      updateLocalSubmission(submissionId, { status: 'rejected', rejection_reason: reason });
+      updateLocalSubmission(submissionId, {
+        status: 'rejected',
+        rejection_reason: reason,
+        proof_screenshot_url: null,
+        proof_screenshot_urls: [],
+        proof_file_url: null,
+      });
       return;
     }
     throw err;
