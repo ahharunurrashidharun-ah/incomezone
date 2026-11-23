@@ -39,8 +39,10 @@ import RefundPage from './pages/RefundPage';
 import RulesPage from './pages/RulesPage';
 import BlogPage from './pages/BlogPage';
 import AccountStatusPage from './pages/AccountStatusPage';
+import SupportPage from './pages/SupportPage';
 import ScrollToTop from './components/ScrollToTop';
 import TelegramNotificationListener from './components/TelegramNotificationListener';
+import LiveSupportWidget from './components/LiveSupportWidget';
 
 export default function App() {
   return (
@@ -96,8 +98,10 @@ export default function App() {
             <Route path="/withdraw" element={<WithdrawPage />} />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="/notifications" element={<NotificationsPage />} />
+            <Route path="/support" element={<SupportPage />} />
           </Route>
         </Routes>
+        <LiveSupportWidget />
       </Router>
     </AuthProvider>
   </ZoomProvider>

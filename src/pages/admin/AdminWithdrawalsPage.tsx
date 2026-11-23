@@ -158,6 +158,7 @@ export default function AdminWithdrawalsPage() {
         updateLocalWithdrawal(reqId, { status: 'approved' });
 
         saveLocalNotification(userId, {
+          id: `wd_${reqId}_approved`,
           title: 'উইথড্র সফল হয়েছে! 💸',
           message: `আপনার $${parsedAmount.toFixed(2)} (৳${Math.round(parsedAmount * 100)}) উত্তোলন রিকোয়েস্ট সফলভাবে সম্পন্ন হয়েছে। টাকা আপনার একাউন্টে পাঠানো হয়েছে।`,
           type: 'withdrawal',
@@ -244,6 +245,7 @@ export default function AdminWithdrawalsPage() {
         }, 0);
 
         saveLocalNotification(userId, {
+          id: `wd_${reqId}_rejected`,
           title: 'উইথড্র রিজেক্টেড ও রিফান্ডেড ❌',
           message: `আপনার $${parsedAmount.toFixed(2)} (৳${Math.round(parsedAmount * 100)}) উইথড্র রিকোয়েস্ট রিজেক্ট করা হয়েছে এবং টাকা আপনার আর্নিং ব্যালেন্সে ফেরত দেওয়া হয়েছে।`,
           type: 'withdrawal',

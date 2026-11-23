@@ -21,7 +21,11 @@ import {
   saveLocalNotification,
   UserNotificationItem,
   getNotificationPermissionState,
-  requestNativeNotificationPermission
+  requestNativeNotificationPermission,
+  registerNotificationServiceWorker,
+  showDeviceNotification,
+  syncRemoteUserNotifications,
+  isInsideEmbeddedIframe
 } from '../lib/localFallbackStore';
 import toast from 'react-hot-toast';
 
@@ -29,26 +33,60 @@ export default function NotificationsPage() {
   const { user } = useAuth();
   const [notifications, setNotifications] = useState<UserNotificationItem[]>([]);
   const [activeFilter, setActiveFilter] = useState<'all' | 'deposit' | 'withdrawal' | 'task' | 'broadcast'>('all');
-  const [permissionState, setPermissionState] = useState<string>('granted');
+  const [permissionState, setPermissionState] = useState<string>(() => getNotificationPermissionState());
+  const [testingNotif, setTestingNotif] = useState(false);
+  const inIframe = isInsideEmbeddedIframe();
 
   useEffect(() => {
-    setPermissionState(getNotificationPermissionState());
+    const state = getNotificationPermissionState();
+    setPermissionState(state);
+    if (state === 'granted') {
+      void registerNotificationServiceWorker();
+    }
   }, []);
 
   const handleRequestPermission = async () => {
     const perm = await requestNativeNotificationPermission();
     setPermissionState(perm);
     if (perm === 'granted') {
-      toast.success('ফোনের নোটিফিকেশন পারমিশন চালু করা হয়েছে! 🎉');
+      const title = 'ফোনের সিস্টেমে নোটিফিকেশন একটিভ! 🔔';
+      const message = 'এখন আপনার ডিভাইসে সমস্ত গুরুত্বপূর্ণ আপডেট সরাসরি নোটিফিকেশনে চলে আসবে।';
+      const result = await showDeviceNotification(title, message, { tag: 'welcome_push_page' });
       if (user?.uid) {
         saveLocalNotification(user.uid, {
-          title: 'ফোনের সিস্টেমে নোটিফিকেশন একটিভ! 🔔',
-          message: 'এখন আপনার ডিভাইসে সমস্ত গুরুত্বপূর্ণ আপডেট সরাসরি নোটিফিকেশনে চলে আসবে।',
+          id: `welcome_push_${Date.now()}`,
+          title,
+          message,
           type: 'announcement',
-        });
+        }, { skipRemoteSync: true, skipNative: true });
+      }
+      if (result.shown) {
+        toast.success('ফোনের নোটিফিকেশন চালু হয়েছে! 🎉 আপনার ফোনের নোটিফিকেশন বার চেক করুন।');
+      } else {
+        toast.error(result.reason || 'নোটিফিকেশন পারমিশন চালু হয়েছে, তবে ডিভাইসে পপআপ দেখানো যায়নি।');
       }
     } else if (perm === 'denied') {
-      toast.error('নোটিফিকেশন পারমিশন ব্লক করা আছে। ফোনের ব্রাউজার সেটিংসে গিয়ে এলাউ করুন।');
+      toast.error('নোটিফিকেশন পারমিশন ব্লক করা আছে। ফোনের ব্রাউজার সেটিংসে গিয়ে Allow করুন।');
+    } else if (perm === 'unsupported') {
+      toast.error('এই ব্রাউজারে সিস্টেম নোটিফিকেশন সাপোর্ট করে না। Chrome ব্রাউজার দিয়ে ওপেন করুন।');
+    }
+  };
+
+  const handleSendTestNotification = async () => {
+    setTestingNotif(true);
+    try {
+      const result = await showDeviceNotification(
+        'টেস্ট নোটিফিকেশন সফল! 🔔',
+        'অভিনন্দন! আপনার ফোনে IncomeZone-এর নোটিফিকেশন সঠিকভাবে কাজ করছে।',
+        { tag: `test_${Date.now()}`, url: '/notifications' }
+      );
+      if (result.shown) {
+        toast.success('ফোনে টেস্ট নোটিফিকেশন পাঠানো হয়েছে! স্ক্রিনের উপরে নোটিফিকেশন বার দেখুন।');
+      } else {
+        toast.error(result.reason || 'নোটিফিকেশন পাঠানো যায়নি। ব্রাউজারের সেটিংস চেক করুন।');
+      }
+    } finally {
+      setTestingNotif(false);
     }
   };
 
@@ -61,6 +99,7 @@ export default function NotificationsPage() {
   useEffect(() => {
     if (!user?.uid) return;
     loadNotifications();
+    void syncRemoteUserNotifications(user.uid);
 
     const handleUpdated = (e: any) => {
       if (!e.detail || !e.detail.userId || e.detail.userId === user.uid) {
@@ -237,16 +276,44 @@ export default function NotificationsPage() {
             </button>
           </div>
         ) : permissionState === 'granted' ? (
-          <div className="mt-5 p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-500/30 flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-300">
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-              <span className="font-bold">ডিভাইস নোটিফিকেশন সক্রিয় (System Push Notifications Enabled)</span>
+          <div className="mt-5 p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-800 dark:text-emerald-300">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <span className="font-bold">ডিভাইস নোটিফিকেশন সক্রিয় (System Notifications Enabled)</span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 font-bold">
+                  Active
+                </span>
+              </div>
+              {inIframe && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-300 font-medium">
+                  প্রিভিউ মোডের পরিবর্তে সরাসরি ফোনের Chrome ব্রাউজারে ওপেন করলে ফোনের নোটিফিকেশন বারে সবচেয়ে ভালো কাজ করে।
+                </p>
+              )}
             </div>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 font-bold">
-              Active
-            </span>
+            <button
+              onClick={handleSendTestNotification}
+              disabled={testingNotif}
+              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs shadow-sm transition-all shrink-0 cursor-pointer disabled:opacity-60"
+            >
+              {testingNotif ? 'পাঠানো হচ্ছে...' : 'টেস্ট নোটিফিকেশন পাঠান'}
+            </button>
           </div>
-        ) : null}
+        ) : permissionState === 'denied' ? (
+          <div className="mt-5 p-4 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-500/30 text-xs text-rose-800 dark:text-rose-200 space-y-1">
+            <p className="font-black">ফোনের নোটিফিকেশন পারমিশন ব্লক (Blocked) করা রয়েছে</p>
+            <p className="text-[11px] font-semibold opacity-90">
+              চালু করতে ব্রাউজারের অ্যাড্রেস বারের বাম দিকের সেটিংস/লক আইকনে ট্যাপ করে Permissions → Notifications → Allow সিলেক্ট করুন।
+            </p>
+          </div>
+        ) : (
+          <div className="mt-5 p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-500/30 text-xs text-amber-800 dark:text-amber-200 space-y-1">
+            <p className="font-black">এই ব্রাউজারে সিস্টেম নোটিফিকেশন সাপোর্ট করে না</p>
+            <p className="text-[11px] font-semibold opacity-90">
+              সরাসরি ফোনের Google Chrome ব্রাউজারে ওয়েবসাইটটি ওপেন করে নোটিফিকেশন চালু করুন।
+            </p>
+          </div>
+        )}
 
         {/* Filter Pills */}
         <div className="flex items-center gap-2 mt-6 overflow-x-auto pb-1 scrollbar-none">

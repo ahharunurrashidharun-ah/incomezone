@@ -256,6 +256,7 @@ export default function AdminDepositsPage() {
         }, 0);
 
         saveLocalNotification(userId, {
+          id: `dep_${reqId}_approved`,
           title: 'ডিপোজিট অ্যাপ্রুভড! 🎉',
           message: depositBonusPercent > 0 && bonusVal > 0
             ? `আপনার $${parsedAmount.toFixed(2)} (৳${Math.round(parsedAmount * 100)}) ডিপোজিট এবং ${depositBonusPercent}% বোনাস ($${bonusVal.toFixed(2)}) সফলভাবে অ্যাপ্রুভ করা হয়েছে!`
@@ -287,6 +288,7 @@ export default function AdminDepositsPage() {
         updateLocalDeposit(reqId, { status: 'rejected' });
 
         saveLocalNotification(userId, {
+          id: `dep_${reqId}_rejected`,
           title: 'ডিপোজিট রিকোয়েস্ট রিজেক্টেড ❌',
           message: `আপনার $${parsedAmount.toFixed(2)} (৳${Math.round(parsedAmount * 100)}) ডিপোজিট রিকোয়েস্টটি প্রত্যাখান করা হয়েছে। বিস্তারিত জানতে সাপোর্টে যোগাযোগ করুন।`,
           type: 'deposit',

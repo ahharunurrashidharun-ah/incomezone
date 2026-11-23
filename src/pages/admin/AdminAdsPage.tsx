@@ -173,6 +173,7 @@ export default function AdminAdsPage() {
 
       if (matchedAd?.ownerId) {
         saveLocalNotification(matchedAd.ownerId, {
+          id: `ad_${adId}_active`,
           title: 'বিজ্ঞাপন অনুমোদন সফল! 📢',
           message: `আপনার স্পন্সরকৃত অ্যাড ক্যাম্পেইন "${matchedAd.title || 'Ad'}" সক্রিয় ও লাইভ করা হয়েছে।`,
           type: 'announcement',
@@ -262,6 +263,7 @@ export default function AdminAdsPage() {
         }
 
         saveLocalNotification(ad.ownerId, {
+          id: `ad_${ad.id}_expired`,
           title: 'বিজ্ঞাপন রিজেক্টেড ও রিফান্ডেড ⚠️',
           message: `আপনার স্পন্সরকৃত অ্যাড ক্যাম্পেইন "${ad.title || 'Ad'}" বাতিল করা হয়েছে এবং $${Number(ad.paidAmount).toFixed(2)} ডিপোজিট ওয়ালেটে ফেরত দেওয়া হয়েছে।`,
           type: 'announcement',

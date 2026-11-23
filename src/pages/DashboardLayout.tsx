@@ -18,7 +18,8 @@ import {
   AlertTriangle,
   Bell,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Headphones
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, formatUserDisplayId } from '../lib/supabaseClient';
@@ -31,7 +32,10 @@ import {
   markNotificationsAsRead,
   UserNotificationItem,
   getNotificationPermissionState,
-  requestNativeNotificationPermission
+  requestNativeNotificationPermission,
+  registerNotificationServiceWorker,
+  syncRemoteUserNotifications,
+  showDeviceNotification
 } from '../lib/localFallbackStore';
 
 const SIDEBAR_LINKS = [
@@ -44,6 +48,7 @@ const SIDEBAR_LINKS = [
   { name: 'Deposit', path: '/deposit', icon: Wallet },
   { name: 'Withdraw', path: '/withdraw', icon: Banknote },
   { name: 'Notifications', path: '/notifications', icon: Bell },
+  { name: 'Live Support', path: '/support', icon: Headphones },
 ];
 
 export default function DashboardLayout() {
@@ -116,14 +121,104 @@ export default function DashboardLayout() {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'users', filter: `id=eq.${user.uid}` }, () => {
           fetchUserData();
         })
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'submissions', filter: `worker_id=eq.${user.uid}` }, () => {
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'submissions', filter: `worker_id=eq.${user.uid}` }, (payload: any) => {
           fetchUserData();
+          const row = payload?.new;
+          if (row && (row.status === 'approved' || row.status === 'rejected')) {
+            const recentEnough = !row.reviewed_at || (Date.now() - new Date(row.reviewed_at).getTime() < 24 * 60 * 60 * 1000);
+            if (recentEnough) {
+              saveLocalNotification(user.uid, {
+                id: `sub_${row.id}_${row.status}`,
+                title: row.status === 'approved' ? 'টাস্ক অ্যাপ্রুভড! 🏆' : 'টাস্ক রিজেক্টেড ⚠️',
+                message: row.status === 'approved'
+                  ? 'আপনার সাবমিট করা কাজের প্রমাণপত্র সফলভাবে অ্যাপ্রুভ করা হয়েছে এবং আয় আপনার আর্নিং ব্যালেন্সে যোগ হয়েছে!'
+                  : `আপনার সাবমিট করা কাজটির প্রমাণপত্র গ্রহণযোগ্য হয়নি।${row.rejection_reason ? ` কারণ: ${row.rejection_reason}` : ''}`,
+                type: 'submission',
+              }, { skipRemoteSync: true });
+            }
+          }
+        })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'deposit_requests', filter: `user_id=eq.${user.uid}` }, (payload: any) => {
+          fetchUserData();
+          const row = payload?.new;
+          if (row && (row.status === 'approved' || row.status === 'rejected')) {
+            const amt = Number(row.amount || 0);
+            saveLocalNotification(user.uid, {
+              id: `dep_${row.id}_${row.status}`,
+              title: row.status === 'approved' ? 'ডিপোজিট অ্যাপ্রুভড! 🎉' : 'ডিপোজিট রিকোয়েস্ট রিজেক্টেড ❌',
+              message: row.status === 'approved'
+                ? `আপনার $${amt.toFixed(2)} (৳${Math.round(amt * 100)}) ডিপোজিট সফলভাবে অ্যাপ্রুভ হয়েছে ওয়ালেটে জমা হয়েছে।`
+                : `আপনার $${amt.toFixed(2)} (৳${Math.round(amt * 100)}) ডিপোজিট রিকোয়েস্টটি প্রত্যাখান করা হয়েছে।`,
+              type: 'deposit',
+            }, { skipRemoteSync: true });
+          }
+        })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'withdraw_requests', filter: `user_id=eq.${user.uid}` }, (payload: any) => {
+          fetchUserData();
+          const row = payload?.new;
+          if (row && (row.status === 'approved' || row.status === 'rejected')) {
+            const amt = Number(row.amount || 0);
+            saveLocalNotification(user.uid, {
+              id: `wd_${row.id}_${row.status}`,
+              title: row.status === 'approved' ? 'উইথড্র সফল হয়েছে! 💸' : 'উইথড্র রিজেক্টেড ও রিফান্ডেড ❌',
+              message: row.status === 'approved'
+                ? `আপনার $${amt.toFixed(2)} (৳${Math.round(amt * 100)}) উত্তোলন রিকোয়েস্ট সফলভাবে সম্পন্ন হয়েছে।`
+                : `আপনার $${amt.toFixed(2)} (৳${Math.round(amt * 100)}) উইথড্র রিকোয়েস্ট রিজেক্ট করা হয়েছে এবং টাকা আপনার আর্নিং ব্যালেন্সে ফেরত দেওয়া হয়েছে।`,
+              type: 'withdrawal',
+            }, { skipRemoteSync: true });
+          }
+        })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'jobs', filter: `owner_id=eq.${user.uid}` }, (payload: any) => {
+          fetchUserData();
+          const row = payload?.new;
+          if (row && (row.status === 'active' || row.status === 'rejected')) {
+            saveLocalNotification(user.uid, {
+              id: `job_${row.id}_${row.status}`,
+              title: row.status === 'active' ? 'জব ক্যাম্পেইন লাইভ! 🚀' : 'জব পোস্ট বাতিল ও রিফান্ড ⚠️',
+              message: row.status === 'active'
+                ? `আপনার পোস্ট করা নতুন মিশন "${row.title || 'Job'}" অ্যাডমিন কর্তৃক অনুমোদিত হয়েছে এবং লাইভ করা হয়েছে।`
+                : `আপনার পোস্ট করা মিশন "${row.title || 'Job'}" বাতিল করা হয়েছে।${row.rejection_reason ? ` কারণ: ${row.rejection_reason}` : ''}`,
+              type: 'announcement',
+            }, { skipRemoteSync: true });
+          }
+        })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'ads', filter: `owner_id=eq.${user.uid}` }, (payload: any) => {
+          fetchUserData();
+          const row = payload?.new;
+          if (row && (row.status === 'active' || row.status === 'expired' || row.status === 'rejected')) {
+            saveLocalNotification(user.uid, {
+              id: `ad_${row.id}_${row.status}`,
+              title: row.status === 'active' ? 'বিজ্ঞাপন অনুমোদন সফল! 📢' : 'বিজ্ঞাপন রিজেক্টেড ও রিফান্ডেড ⚠️',
+              message: row.status === 'active'
+                ? `আপনার স্পন্সরকৃত অ্যাড ক্যাম্পেইন "${row.title || 'Ad'}" সক্রিয় ও লাইভ করা হয়েছে।`
+                : `আপনার স্পন্সরকৃত অ্যাড ক্যাম্পেইন "${row.title || 'Ad'}" বাতিল করা হয়েছে এবং ব্যালেন্স রিফান্ড করা হয়েছে।`,
+              type: 'announcement',
+            }, { skipRemoteSync: true });
+          }
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, (payload: any) => {
+          const changedKey = payload?.new?.key;
+          if (changedKey === 'latest_broadcast') {
+            syncLatestBroadcast();
+          } else if (changedKey === `user_notifs_${user.uid}`) {
+            syncRemoteUserNotifications(user.uid);
+          } else if (changedKey === 'platform_controls') {
+            fetchNotice();
+          }
         })
         .subscribe();
 
-      const handleRefresh = () => fetchUserData();
+      const handleRefresh = () => {
+        fetchUserData();
+        syncRemoteUserNotifications(user.uid);
+        syncLatestBroadcast();
+      };
       const handleVisibility = () => {
-        if (document.visibilityState === 'visible') fetchUserData();
+        if (document.visibilityState === 'visible') {
+          fetchUserData();
+          syncRemoteUserNotifications(user.uid);
+          syncLatestBroadcast();
+        }
       };
 
       window.addEventListener('submission_updated', handleRefresh);
@@ -150,30 +245,46 @@ export default function DashboardLayout() {
   const [notifications, setNotifications] = useState<UserNotificationItem[]>([]);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [showAllNotifs, setShowAllNotifs] = useState(false);
-  const [notifPermission, setNotifPermission] = useState<string>('granted');
+  const [notifPermission, setNotifPermission] = useState<string>(() => getNotificationPermissionState());
   const [isPermissionBannerDismissed, setIsPermissionBannerDismissed] = useState(false);
 
   useEffect(() => {
-    setNotifPermission(getNotificationPermissionState());
+    const state = getNotificationPermissionState();
+    setNotifPermission(state);
+    if (state === 'granted') {
+      void registerNotificationServiceWorker();
+    }
   }, []);
 
   const handleEnableNativeNotifications = async () => {
     const perm = await requestNativeNotificationPermission();
     setNotifPermission(perm);
     if (perm === 'granted') {
-      import('react-hot-toast').then(({ default: toast }) => {
-        toast.success('ফোনের সিস্টেমে নোটিফিকেশন চালু করা হয়েছে! 🎉');
-      });
+      const title = 'ফোনের নোটিফিকেশন সচল হয়েছে! 🔔';
+      const message = 'আপনার ফোনে এখন সকল টাস্ক এপ্রুভ/রিজেক্ট, ডিপোজিট, উইথড্র ও নোটিশ এর ইনস্ট্যান্ট নোটিফিকেশন চলে আসবে।';
+      const result = await showDeviceNotification(title, message, { tag: 'welcome_push_enabled' });
       if (user?.uid) {
         saveLocalNotification(user.uid, {
-          title: 'ফোনের নোটিফিকেশন সচল হয়েছে! 🔔',
-          message: 'আপনার ফোনে এখন সকল টাস্ক এপ্রুভ/রিজেক্ট, ডিপোজিট, উইথড্র ও নোটিশ এর ইনস্ট্যান্ট পুশ নোটিফিকেশন চলে আসবে।',
+          id: `welcome_push_${Date.now()}`,
+          title,
+          message,
           type: 'announcement',
-        });
+        }, { skipRemoteSync: true, skipNative: true });
       }
+      import('react-hot-toast').then(({ default: toast }) => {
+        if (result.shown) {
+          toast.success('ফোনের সিস্টেম নোটিফিকেশন সফলভাবে চালু হয়েছে! 🎉');
+        } else {
+          toast.error(result.reason || 'পারমিশন চালু হয়েছে, তবে ফোনের প্রিভিউ ফ্রেম থেকে পপআপ ব্লক হতে পারে।');
+        }
+      });
     } else if (perm === 'denied') {
       import('react-hot-toast').then(({ default: toast }) => {
-        toast.error('নোটিফিকেশন পারমিশন ব্লক করা আছে। ডিভাইসের ব্রাউজার সেটিংস থেকে এলাউ করুন।');
+        toast.error('নোটিফিকেশন পারমিশন ব্লক করা আছে। ব্রাউজারের সাইট সেটিংস থেকে Allow করুন।');
+      });
+    } else if (perm === 'unsupported') {
+      import('react-hot-toast').then(({ default: toast }) => {
+        toast.error('এই ব্রাউজারে ফোনের পুশ নোটিফিকেশন সাপোর্ট করে না। ফোনের Chrome ব্রাউজার ব্যবহার করুন।');
       });
     }
   };
@@ -230,17 +341,18 @@ export default function DashboardLayout() {
       }
 
       if (latestBc && latestBc.text) {
-        const bcId = latestBc.id || 'default_bc';
-        const receivedKey = `iz_user_received_bc_${user.uid}_${bcId}`;
+        const rawBcId = String(latestBc.id || 'default_bc');
+        const normalizedId = rawBcId.startsWith('bc_') ? rawBcId : `bc_${rawBcId}`;
+        const receivedKey = `iz_user_received_bc_${user.uid}_${normalizedId}`;
         if (!localStorage.getItem(receivedKey)) {
           localStorage.setItem(receivedKey, 'true');
           saveLocalNotification(user.uid, {
-            id: `bc_${bcId}`,
+            id: normalizedId,
             title: '📢 অ্যাডমিন অফিশিয়াল ব্রডকাস্ট নোটিশ',
             message: latestBc.text,
             type: 'broadcast',
             created_at: latestBc.created_at || new Date().toISOString(),
-          });
+          }, { skipRemoteSync: true });
         }
       }
     } catch {}
@@ -250,6 +362,9 @@ export default function DashboardLayout() {
     fetchNotice();
     fetchUserNotifications();
     syncLatestBroadcast();
+    if (user?.uid) {
+      void syncRemoteUserNotifications(user.uid);
+    }
 
     const handleControlsUpdated = (e: any) => {
       if (e.detail) {
@@ -270,12 +385,17 @@ export default function DashboardLayout() {
 
     const handleBroadcastNotification = (e: any) => {
       if (e.detail && e.detail.text) {
+        const rawBcId = String(e.detail.id || `bc_${Date.now()}`);
+        const normalizedId = rawBcId.startsWith('bc_') ? rawBcId : `bc_${rawBcId}`;
         if (user?.uid) {
+          localStorage.setItem(`iz_user_received_bc_${user.uid}_${normalizedId}`, 'true');
           saveLocalNotification(user.uid, {
+            id: normalizedId,
             title: '📢 অ্যাডমিন অফিশিয়াল ব্রডকাস্ট নোটিশ',
             message: e.detail.text,
             type: 'broadcast',
-          });
+            created_at: e.detail.created_at || new Date().toISOString(),
+          }, { skipRemoteSync: true });
         }
         import('react-hot-toast').then(({ default: toast }) => {
           toast(e.detail.text, {

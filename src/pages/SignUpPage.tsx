@@ -17,8 +17,9 @@ import {
 import { sendNewUserAlert } from '../utils/telegramNotifier';
 import { checkIsAdmin } from '../lib/adminConfig';
 import BrandLogo from '../components/BrandLogo';
+import SupportChatPanel from '../components/SupportChatPanel';
 import toast from 'react-hot-toast';
-import { Eye, EyeOff, Mail, Lock, User, ArrowRight, AlertCircle, CheckCircle2, RefreshCw, ShieldAlert, Wifi } from 'lucide-react';
+import { Eye, EyeOff, Mail, Lock, User, ArrowRight, AlertCircle, CheckCircle2, RefreshCw, ShieldAlert, Wifi, Headphones, X } from 'lucide-react';
 
 export default function SignUpPage() {
   const location = useLocation();
@@ -34,6 +35,7 @@ export default function SignUpPage() {
   const [error, setError] = useState('');
   const [successInfo, setSuccessInfo] = useState<string | null>(null);
   const [pendingSecurityInfo, setPendingSecurityInfo] = useState<{ ip: string; email: string } | null>(null);
+  const [showPendingSupport, setShowPendingSupport] = useState(false);
   const [resending, setResending] = useState(false);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
@@ -478,7 +480,16 @@ export default function SignUpPage() {
                     </a>
                   </div>
 
-                  <div className="pt-2">
+                  <div className="pt-2 space-y-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setShowPendingSupport(true)}
+                      className="inline-flex items-center justify-center gap-2 w-full py-3 px-4 text-xs font-black text-purple-700 dark:text-amber-300 bg-purple-50 hover:bg-purple-100 dark:bg-purple-900/40 dark:hover:bg-purple-900/60 border border-purple-200 dark:border-purple-500/35 rounded-xl transition-all cursor-pointer"
+                    >
+                      <Headphones className="w-4 h-4 shrink-0" />
+                      <span>লাইভ সাপোর্ট (Live Support)</span>
+                    </button>
+
                     <Link
                       to="/login"
                       className="inline-flex items-center justify-center gap-2 w-full py-3 px-4 text-xs font-black text-white bg-purple-600 hover:bg-purple-700 dark:bg-amber-400 dark:hover:bg-amber-300 dark:text-slate-950 rounded-xl transition-all shadow-md cursor-pointer"
@@ -488,6 +499,56 @@ export default function SignUpPage() {
                     </Link>
                   </div>
                 </div>
+
+                {showPendingSupport && (
+                  <div
+                    className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-5"
+                    onClick={() => setShowPendingSupport(false)}
+                  >
+                    <div
+                      role="dialog"
+                      aria-modal="true"
+                      onClick={(e) => e.stopPropagation()}
+                      className="w-full max-w-[460px] h-[560px] max-h-[88dvh] bg-white dark:bg-[#130b2c] border border-slate-200 dark:border-purple-500/30 rounded-3xl shadow-2xl flex flex-col overflow-hidden"
+                    >
+                      <div className="px-4 py-3.5 border-b border-slate-200 dark:border-purple-500/20 bg-slate-50 dark:bg-[#0e0822] flex items-center justify-between gap-2 shrink-0">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-9 h-9 rounded-xl bg-purple-600 dark:bg-amber-400 text-white dark:text-slate-950 flex items-center justify-center shrink-0">
+                            <Headphones className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                              পেন্ডিং অ্যাকাউন্ট সাপোর্ট
+                            </h3>
+                            <p className="text-[11px] font-medium text-slate-500 dark:text-purple-300/70 truncate">
+                              তাৎক্ষণিক কমন প্রশ্ন ও উত্তর
+                            </p>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => setShowPendingSupport(false)}
+                          aria-label="বন্ধ করুন"
+                          className="w-9 h-9 rounded-xl text-slate-500 dark:text-purple-300 hover:bg-slate-200/70 dark:hover:bg-purple-900/40 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <div className="flex-1 min-h-0">
+                        <SupportChatPanel
+                          variant="widget"
+                          accountOverride={{
+                            accountStatus: 'pending',
+                            email: pendingSecurityInfo.email,
+                            ip: pendingSecurityInfo.ip,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             ) : successInfo ? (
               <div className="space-y-6">

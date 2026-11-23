@@ -618,6 +618,7 @@ export default function AdminUsersPage() {
 
       // 4. Save welcoming notification for user
       saveLocalNotification(user.id, {
+        id: `user_approved_${user.id}`,
         title: 'অ্যাকাউন্ট ভেরিফিকেশন সম্পন্ন! ✅',
         message: 'আপনার অ্যাকাউন্টটি অ্যাডমিন কর্তৃক ভেরিফাই করে সফলভাবে এপ্রুভ (অনুমোদন) করা হয়েছে। এখন আপনি সকল ফিচার ও মিশন ব্যবহার করতে পারবেন।',
         type: 'announcement'

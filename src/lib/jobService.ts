@@ -582,6 +582,7 @@ export async function submitJob(subData: SubmissionData): Promise<string> {
 
     // 5. Save in-app notification for worker
     saveLocalNotification(subData.workerId, {
+      id: `sub_${newSubId}_submitted`,
       title: 'টাস্ক সাবমিশন সফল হয়েছে! ⏳',
       message: `আপনার জব "${jobTitle}"-এর কাজের প্রমাণপত্র সফলভাবে জমা হয়েছে। নিয়োগকর্তা যাচাই করে অনুমোদন দিলে ব্যালেন্স জমা হবে।`,
       type: 'submission',
@@ -590,6 +591,7 @@ export async function submitJob(subData: SubmissionData): Promise<string> {
     // 6. Save in-app notification for employer / job owner (only if different from worker)
     if (jobOwnerId && jobOwnerId !== subData.workerId) {
       saveLocalNotification(jobOwnerId, {
+        id: `emp_sub_${newSubId}`,
         title: 'নতুন টাস্ক সাবমিশন! 📋',
         message: `আপনার জব "${jobTitle}"-এ একজন কর্মী কাজের প্রমাণপত্র জমা দিয়েছেন। My Jobs থেকে পর্যালোচনা করুন।`,
         type: 'submission',
@@ -866,6 +868,7 @@ export async function approveSubmission(submissionId: string, jobId: string, wor
 
   // Dispatch balance update & user notification
   saveLocalNotification(targetWorkerId, {
+    id: `sub_${submissionId}_approved`,
     title: 'টাস্ক অ্যাপ্রুভড! 🏆',
     message: `আপনার সাবমিট করা জবের কাজটির প্রমাণপত্র সফলভাবে অ্যাপ্রুভ করা হয়েছে এবং $${reward.toFixed(2)} (৳${Math.round(reward * 100)}) আর্নিং ব্যালেন্স ওয়ালেটে জমা হয়েছে।`,
     type: 'submission',
@@ -975,6 +978,7 @@ export async function rejectSubmission(submissionId: string, jobId: string, reas
 
     if (workerId) {
       saveLocalNotification(workerId, {
+        id: `sub_${submissionId}_rejected`,
         title: 'টাস্ক রিজেক্টেড ⚠️',
         message: `আপনার সাবমিট করা কাজটির প্রমাণপত্র গ্রহণযোগ্য হয়নি। ${reason ? `কারণ: ${reason}` : ''}`,
         type: 'submission',
@@ -1078,6 +1082,7 @@ export async function adminApproveJob(jobId: string): Promise<void> {
 
     if (ownerId) {
       saveLocalNotification(ownerId, {
+        id: `job_${jobId}_active`,
         title: 'জব ক্যাম্পেইন লাইভ! 🚀',
         message: `আপনার পোস্ট করা নতুন মিশন "${job?.title || 'Job'}" অ্যাডমিন কর্তৃক অনুমোদিত হয়েছে এবং সরাসরি লাইভ করা হয়েছে।`,
         type: 'announcement',
@@ -1183,6 +1188,7 @@ export async function adminRejectJob(jobId: string, reason = 'Violates platform 
       }
 
       saveLocalNotification(ownerId, {
+        id: `job_${jobId}_rejected`,
         title: 'জব পোস্ট বাতিল ও রিফান্ড ⚠️',
         message: `আপনার পোস্ট করা মিশন "${job.title || 'Job'}" বাতিল করা হয়েছে। কারণ: ${reason}। অব্যবহৃত $${refundAmount.toFixed(2)} ডিপোজিট ব্যালেন্সে ফেরত দেওয়া হয়েছে।`,
         type: 'announcement',

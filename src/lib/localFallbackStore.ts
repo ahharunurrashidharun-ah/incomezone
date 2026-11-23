@@ -856,13 +856,112 @@ export interface UserNotificationItem {
   created_at: string;
 }
 
+const NOTIF_ICON_PATH = '/assets/aistudio/1795356168824_9e1cf2d3.jpg';
+
+const getActiveSessionUserId = (): string | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem('iz_auth_session');
+    if (!raw) return null;
+    const sess = JSON.parse(raw);
+    return sess?.user?.uid || sess?.profile?.id || null;
+  } catch {
+    return null;
+  }
+};
+
+export const isInsideEmbeddedIframe = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+};
+
 export const getLocalNotifications = (userId: string): UserNotificationItem[] => {
   try {
     const raw = localStorage.getItem(`iz_user_notifications_${userId}`);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }
     return [];
   } catch {
     return [];
+  }
+};
+
+export const registerNotificationServiceWorker = async (): Promise<ServiceWorkerRegistration | null> => {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return null;
+  try {
+    let registration = await navigator.serviceWorker.getRegistration('/');
+    if (!registration) {
+      registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    }
+    const readyPromise = navigator.serviceWorker.ready;
+    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000));
+    const readyReg = (await Promise.race([readyPromise, timeoutPromise])) as ServiceWorkerRegistration | null;
+    return readyReg || registration;
+  } catch (err) {
+    console.warn('Service worker registration failed:', err);
+    return null;
+  }
+};
+
+export const showDeviceNotification = async (
+  title: string,
+  message: string,
+  options?: { tag?: string; url?: string }
+): Promise<{ shown: boolean; method?: 'sw' | 'window'; reason?: string }> => {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return { shown: false, reason: 'এই ব্রাউজারে সিস্টেম নোটিফিকেশন সাপোর্ট করে না।' };
+  }
+  if (Notification.permission !== 'granted') {
+    return { shown: false, reason: 'ফোনের নোটিফিকেশন পারমিশন চালু করা নেই।' };
+  }
+
+  const tag = options?.tag || `iz_${Date.now()}`;
+  const notifOptions: NotificationOptions & { renotify?: boolean; vibrate?: number[] } = {
+    body: message,
+    icon: NOTIF_ICON_PATH,
+    badge: NOTIF_ICON_PATH,
+    tag,
+    renotify: true,
+    vibrate: [200, 100, 200],
+    data: { url: options?.url || '/notifications' },
+  };
+
+  // 1. Mobile Chrome / Android / modern browsers REQUIRE ServiceWorkerRegistration.showNotification
+  try {
+    const reg = await registerNotificationServiceWorker();
+    if (reg && typeof reg.showNotification === 'function') {
+      await reg.showNotification(title, notifOptions);
+      return { shown: true, method: 'sw' };
+    }
+  } catch (swErr) {
+    console.warn('ServiceWorker showNotification failed, checking fallback:', swErr);
+  }
+
+  // 2. Fallback to window Notification constructor ONLY on desktop browsers where supported
+  try {
+    const nativeNotif = new Notification(title, {
+      body: message,
+      icon: NOTIF_ICON_PATH,
+      tag,
+    });
+    nativeNotif.onclick = () => {
+      try { window.focus(); } catch {}
+    };
+    return { shown: true, method: 'window' };
+  } catch (winErr: any) {
+    console.warn('Native Notification fallback failed:', winErr);
+    return {
+      shown: false,
+      reason: isInsideEmbeddedIframe()
+        ? 'প্রিভিউ ফ্রেম থেকে মোবাইল নোটিফিকেশন ব্লক হতে পারে। সরাসরি ফোনের Chrome ব্রাউজারে লিংকটি ওপেন করুন।'
+        : (winErr?.message || 'ডিভাইসে নোটিফিকেশন দেখানো যায়নি।'),
+    };
   }
 };
 
@@ -874,46 +973,145 @@ export const getNotificationPermissionState = (): NotificationPermission | 'unsu
 export const requestNativeNotificationPermission = async (): Promise<NotificationPermission | 'unsupported'> => {
   if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
   try {
-    const perm = await Notification.requestPermission();
+    let perm: NotificationPermission;
+    if (typeof Notification.requestPermission === 'function') {
+      const result = Notification.requestPermission();
+      perm = result instanceof Promise ? await result : result;
+    } else {
+      perm = Notification.permission;
+    }
+    if (perm === 'granted') {
+      await registerNotificationServiceWorker();
+    }
     return perm;
   } catch {
     return Notification.permission;
   }
 };
 
+export const pushRemoteUserNotification = async (
+  userId: string,
+  item: UserNotificationItem
+): Promise<void> => {
+  if (!userId || !item?.id) return;
+  try {
+    const settingsKey = `user_notifs_${userId}`;
+    const { data } = await supabase
+      .from('settings')
+      .select('value')
+      .eq('key', settingsKey)
+      .maybeSingle();
+
+    let existing: UserNotificationItem[] = [];
+    if (data?.value) {
+      const parsed = typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
+      if (Array.isArray(parsed)) existing = parsed;
+    }
+
+    if (existing.some((n) => n.id === item.id)) return;
+    const merged = [item, ...existing].slice(0, 30);
+
+    await supabase
+      .from('settings')
+      .upsert(
+        {
+          key: settingsKey,
+          value: merged,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+  } catch {
+    // Non-blocking best-effort cross-device sync
+  }
+};
+
+export const syncRemoteUserNotifications = async (userId: string): Promise<void> => {
+  if (!userId) return;
+  try {
+    const settingsKey = `user_notifs_${userId}`;
+    const { data, error } = await supabase
+      .from('settings')
+      .select('value')
+      .eq('key', settingsKey)
+      .maybeSingle();
+
+    if (error || !data?.value) return;
+    const remoteList: UserNotificationItem[] =
+      typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
+    if (!Array.isArray(remoteList) || remoteList.length === 0) return;
+
+    const localList = getLocalNotifications(userId);
+    const localIds = new Set(localList.map((n) => n.id));
+    const newItems = remoteList.filter((item) => item && item.id && !localIds.has(item.id));
+    if (newItems.length === 0) return;
+
+    const merged = [...newItems, ...localList]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 100);
+
+    localStorage.setItem(`iz_user_notifications_${userId}`, JSON.stringify(merged));
+    window.dispatchEvent(new CustomEvent('iz_user_notifications_updated', { detail: { userId } }));
+
+    // Trigger native OS notification on the recipient's phone for fresh unseen notifications (last 24h)
+    const activeUid = getActiveSessionUserId();
+    if (!activeUid || activeUid === userId) {
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      const freshUnread = newItems
+        .filter((n) => !n.read && (!n.created_at || new Date(n.created_at).getTime() >= cutoff))
+        .slice(0, 3);
+      for (const n of freshUnread) {
+        void showDeviceNotification(n.title, n.message, { tag: n.id });
+      }
+    }
+  } catch {}
+};
+
 export const saveLocalNotification = (
   userId: string,
-  notif: { title: string; message: string; type: 'broadcast' | 'deposit' | 'withdrawal' | 'submission' | 'announcement'; id?: string; created_at?: string; read?: boolean }
+  notif: {
+    title: string;
+    message: string;
+    type: 'broadcast' | 'deposit' | 'withdrawal' | 'submission' | 'announcement';
+    id?: string;
+    created_at?: string;
+    read?: boolean;
+  },
+  options?: { skipRemoteSync?: boolean; skipNative?: boolean }
 ) => {
   try {
     const list = getLocalNotifications(userId);
+    const itemId = notif.id || `notif_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+    // Deduplicate: do not store or re-fire OS notification for an already-recorded ID
+    if (list.some((existing) => existing.id === itemId)) {
+      return list.find((existing) => existing.id === itemId);
+    }
+
     const item: UserNotificationItem = {
-      id: notif.id || `notif_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      userId: userId,
+      id: itemId,
+      userId,
       title: notif.title,
       message: notif.message,
       type: notif.type,
       read: notif.read ?? false,
       created_at: notif.created_at || new Date().toISOString(),
     };
-    list.unshift(item);
-    localStorage.setItem(`iz_user_notifications_${userId}`, JSON.stringify(list));
+    const updatedList = [item, ...list].slice(0, 100);
+    localStorage.setItem(`iz_user_notifications_${userId}`, JSON.stringify(updatedList));
     window.dispatchEvent(new CustomEvent('iz_user_notifications_updated', { detail: { userId } }));
 
-    // Trigger native web browser notification on phone/desktop if permission is granted
-    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-      try {
-        const nativeNotif = new Notification(notif.title, {
-          body: notif.message,
-          icon: '/vite.svg',
-          tag: item.id,
-        });
-        nativeNotif.onclick = () => {
-          window.focus();
-        };
-      } catch (err) {
-        console.warn('Native notification trigger failed:', err);
-      }
+    const activeUid = getActiveSessionUserId();
+    const isTargetCurrentDeviceUser = !activeUid || activeUid === userId;
+
+    // Only pop native notification on THIS device if the recipient is the logged-in user here
+    if (!options?.skipNative && isTargetCurrentDeviceUser) {
+      void showDeviceNotification(notif.title, notif.message, { tag: item.id });
+    }
+
+    // Persist to Supabase remote mailbox so notifications arrive on the user's phone even from Admin/Employer devices
+    if (!options?.skipRemoteSync) {
+      void pushRemoteUserNotification(userId, item);
     }
 
     return item;
@@ -923,9 +1121,10 @@ export const saveLocalNotification = (
 export const markNotificationsAsRead = (userId: string) => {
   try {
     const list = getLocalNotifications(userId);
-    const updated = list.map(n => ({ ...n, read: true }));
+    const updated = list.map((n) => ({ ...n, read: true }));
     localStorage.setItem(`iz_user_notifications_${userId}`, JSON.stringify(updated));
     window.dispatchEvent(new CustomEvent('iz_user_notifications_updated', { detail: { userId } }));
   } catch {}
 };
+
 

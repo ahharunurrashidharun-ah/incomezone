@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Clock,
   Lock,
@@ -10,7 +10,9 @@ import {
   Wifi,
   ShieldAlert,
   X,
+  Headphones,
 } from 'lucide-react';
+import SupportChatPanel from './SupportChatPanel';
 
 export type AccountStatusType = 'pending' | 'blocked' | 'deleted';
 
@@ -36,6 +38,70 @@ export default function AccountStatusModal({
   checkingStatus = false,
   embedded = false,
 }: AccountStatusModalProps) {
+  const [showLiveSupport, setShowLiveSupport] = useState(false);
+
+  useEffect(() => {
+    setShowLiveSupport(false);
+  }, [status, email]);
+
+  const statusTitle =
+    status === 'pending'
+      ? 'পেন্ডিং অ্যাকাউন্ট সাপোর্ট'
+      : status === 'blocked'
+      ? 'ব্লক অ্যাকাউন্ট সাপোর্ট'
+      : 'ডিলিট অ্যাকাউন্ট সাপোর্ট';
+
+  const liveSupportModal = showLiveSupport ? (
+    <div
+      className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-5"
+      onClick={() => setShowLiveSupport(false)}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-[460px] h-[560px] max-h-[88dvh] bg-white dark:bg-[#130b2c] border border-slate-200 dark:border-purple-500/30 rounded-3xl shadow-2xl flex flex-col overflow-hidden"
+      >
+        {/* Modal Header */}
+        <div className="px-4 py-3.5 border-b border-slate-200 dark:border-purple-500/20 bg-slate-50 dark:bg-[#0e0822] flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-purple-600 dark:bg-amber-400 text-white dark:text-slate-950 flex items-center justify-center shrink-0">
+              <Headphones className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                {statusTitle}
+              </h3>
+              <p className="text-[11px] font-medium text-slate-500 dark:text-purple-300/70 truncate">
+                তাৎক্ষণিক কমন প্রশ্ন ও উত্তর
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowLiveSupport(false)}
+            aria-label="বন্ধ করুন"
+            className="w-9 h-9 rounded-xl text-slate-500 dark:text-purple-300 hover:bg-slate-200/70 dark:hover:bg-purple-900/40 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 min-h-0">
+          <SupportChatPanel
+            variant="widget"
+            accountOverride={{
+              accountStatus: status,
+              email,
+              ip,
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   const cardContent = (
     <div
       role="dialog"
@@ -119,6 +185,15 @@ export default function AccountStatusModal({
 
             <button
               type="button"
+              onClick={() => setShowLiveSupport(true)}
+              className="w-full py-3 px-5 rounded-xl font-black text-xs sm:text-sm text-purple-700 dark:text-amber-300 bg-purple-50 hover:bg-purple-100 dark:bg-purple-900/40 dark:hover:bg-purple-900/60 border border-purple-200 dark:border-purple-500/35 transition-all cursor-pointer flex items-center justify-center gap-2"
+            >
+              <Headphones className="w-4 h-4 shrink-0" />
+              <span>লাইভ সাপোর্ট (Live Support)</span>
+            </button>
+
+            <button
+              type="button"
               onClick={onClose}
               className="w-full py-3.5 px-5 rounded-xl font-black text-sm text-white bg-slate-900 hover:bg-black dark:bg-purple-600 dark:hover:bg-purple-700 shadow-md transition-all cursor-pointer flex items-center justify-center gap-2"
             >
@@ -177,7 +252,16 @@ export default function AccountStatusModal({
             )}
           </div>
 
-          <div className="pt-1">
+          <div className="space-y-2.5 pt-1">
+            <button
+              type="button"
+              onClick={() => setShowLiveSupport(true)}
+              className="w-full py-3 px-5 rounded-xl font-black text-xs sm:text-sm text-purple-700 dark:text-amber-300 bg-purple-50 hover:bg-purple-100 dark:bg-purple-900/40 dark:hover:bg-purple-900/60 border border-purple-200 dark:border-purple-500/35 transition-all cursor-pointer flex items-center justify-center gap-2"
+            >
+              <Headphones className="w-4 h-4 shrink-0" />
+              <span>লাইভ সাপোর্ট (Live Support)</span>
+            </button>
+
             <button
               type="button"
               onClick={onClose}
@@ -232,6 +316,15 @@ export default function AccountStatusModal({
 
             <button
               type="button"
+              onClick={() => setShowLiveSupport(true)}
+              className="w-full py-3 px-5 rounded-xl font-black text-xs sm:text-sm text-purple-700 dark:text-amber-300 bg-purple-50 hover:bg-purple-100 dark:bg-purple-900/40 dark:hover:bg-purple-900/60 border border-purple-200 dark:border-purple-500/35 transition-all cursor-pointer flex items-center justify-center gap-2"
+            >
+              <Headphones className="w-4 h-4 shrink-0" />
+              <span>লাইভ সাপোর্ট (Live Support)</span>
+            </button>
+
+            <button
+              type="button"
               onClick={onClose}
               className="w-full py-3 px-5 rounded-xl font-bold text-xs sm:text-sm text-slate-700 dark:text-purple-200 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 dark:hover:bg-white/15 transition-all cursor-pointer flex items-center justify-center gap-2"
             >
@@ -245,12 +338,20 @@ export default function AccountStatusModal({
   );
 
   if (embedded) {
-    return cardContent;
+    return (
+      <>
+        {cardContent}
+        {liveSupportModal}
+      </>
+    );
   }
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
-      {cardContent}
-    </div>
+    <>
+      <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+        {cardContent}
+      </div>
+      {liveSupportModal}
+    </>
   );
 }
