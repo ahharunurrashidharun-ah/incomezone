@@ -35,7 +35,15 @@ import {
   requestNativeNotificationPermission,
   registerNotificationServiceWorker,
   syncRemoteUserNotifications,
-  showDeviceNotification
+  flushPendingDeviceNotifications,
+  showDeviceNotification,
+  getLocalJobs,
+  isTableMissingError,
+  AdminBannerNotice,
+  AdminBroadcastMessage,
+  getDeletedBroadcastIdsLocal,
+  saveDeletedBroadcastIdsLocal,
+  removeUserNotificationsByIds,
 } from '../lib/localFallbackStore';
 
 const SIDEBAR_LINKS = [
@@ -112,9 +120,422 @@ export default function DashboardLayout() {
     }
   };
 
+  const getSeenLiveJobs = (uid: string): string[] => {
+    try {
+      const raw = localStorage.getItem(`iz_seen_live_jobs_${uid}`);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const saveSeenLiveJobs = (uid: string, ids: string[]) => {
+    try {
+      const deduped = Array.from(new Set(ids.map(String))).slice(0, 250);
+      localStorage.setItem(`iz_seen_live_jobs_${uid}`, JSON.stringify(deduped));
+    } catch {}
+  };
+
+  const notifyLiveJobForUser = (jobData: {
+    id: string;
+    title?: string;
+    pricePerTask?: number;
+    totalSlots?: number;
+    occupiedSlots?: number;
+    ownerId?: string;
+    activatedAt?: string;
+    created_at?: string;
+  }) => {
+    if (!user?.uid || !jobData?.id) return;
+    const jobId = String(jobData.id);
+    const seen = getSeenLiveJobs(user.uid);
+    if (seen.includes(jobId)) return;
+
+    saveSeenLiveJobs(user.uid, [jobId, ...seen]);
+
+    // The employer who posted this job already receives "জব ক্যাম্পেইন লাইভ! 🚀"
+    if (jobData.ownerId && jobData.ownerId === user.uid) return;
+
+    const price = Number(jobData.pricePerTask || 0);
+    const totalSlots = Number(jobData.totalSlots || 0);
+    const slotsInfo = totalSlots > 0 ? ` · ${totalSlots}টি স্লট` : '';
+    const bdt = Math.round(price * 100);
+
+    saveLocalNotification(
+      user.uid,
+      {
+        id: `live_job_${jobId}`,
+        title: 'নতুন জব লাইভ হয়েছে! 💼',
+        message: `"${jobData.title || 'New Micro-Job'}" — প্রতি টাস্ক $${price.toFixed(2)} (৳${bdt})${slotsInfo}। এখনই Find Jobs-এ কাজ শুরু করুন!`,
+        type: 'job',
+        url: '/jobs',
+        created_at: jobData.activatedAt || new Date().toISOString(),
+      },
+      { skipRemoteSync: true }
+    );
+  };
+
+  const syncNewLiveJobs = async () => {
+    if (!user?.uid) return;
+    try {
+      const seenKey = `iz_seen_live_jobs_${user.uid}`;
+      const isFirstSeed = localStorage.getItem(seenKey) === null;
+      const existingSeen = getSeenLiveJobs(user.uid);
+      const recentCutoff = Date.now() - 15 * 60 * 1000;
+
+      // 1. Check remote/local latest_live_job signal (captures older pending jobs approved just now)
+      let latestSignal: any = null;
+      try {
+        const { data: sigRow } = await supabase
+          .from('settings')
+          .select('value')
+          .eq('key', 'latest_live_job')
+          .maybeSingle();
+        if (sigRow?.value) {
+          latestSignal = typeof sigRow.value === 'string' ? JSON.parse(sigRow.value) : sigRow.value;
+        }
+      } catch {}
+
+      if (!latestSignal) {
+        try {
+          const localSig = localStorage.getItem('iz_latest_live_job');
+          if (localSig) latestSignal = JSON.parse(localSig);
+        } catch {}
+      }
+
+      if (latestSignal?.id) {
+        const sigTs = latestSignal.activatedAt ? new Date(latestSignal.activatedAt).getTime() : 0;
+        if (!isFirstSeed || (!Number.isNaN(sigTs) && sigTs >= recentCutoff)) {
+          notifyLiveJobForUser({
+            id: latestSignal.id,
+            title: latestSignal.title,
+            pricePerTask: latestSignal.pricePerTask,
+            totalSlots: latestSignal.totalSlots,
+            ownerId: latestSignal.ownerId,
+            activatedAt: latestSignal.activatedAt,
+          });
+        }
+      }
+
+      // 2. Check active jobs list in Find Jobs
+      let activeJobs: any[] = [];
+      try {
+        const { data: jobsData, error: jobsErr } = await supabase
+          .from('jobs')
+          .select('id, title, price_per_task, total_slots, occupied_slots, owner_id, employer_id, status, created_at')
+          .eq('status', 'active')
+          .order('created_at', { ascending: false })
+          .limit(25);
+
+        if (!jobsErr && Array.isArray(jobsData)) {
+          activeJobs = jobsData;
+        } else if (jobsErr && isTableMissingError(jobsErr)) {
+          activeJobs = getLocalJobs().filter((j: any) => j.status === 'active');
+        }
+      } catch {
+        activeJobs = getLocalJobs().filter((j: any) => j.status === 'active');
+      }
+
+      if (isFirstSeed) {
+        const currentSeen = getSeenLiveJobs(user.uid);
+        const idsToSeed: string[] = [...currentSeen];
+        for (const j of activeJobs) {
+          if (!j?.id) continue;
+          const jTs = j.created_at ? new Date(j.created_at).getTime() : 0;
+          const hasSlots = Number(j.occupied_slots ?? j.occupiedSlots ?? 0) < Number(j.total_slots ?? j.totalSlots ?? 1);
+          if (!Number.isNaN(jTs) && jTs >= recentCutoff && hasSlots && !idsToSeed.includes(String(j.id))) {
+            notifyLiveJobForUser({
+              id: j.id,
+              title: j.title,
+              pricePerTask: j.price_per_task ?? j.pricePerTask,
+              totalSlots: j.total_slots ?? j.totalSlots,
+              ownerId: j.owner_id ?? j.employer_id ?? j.ownerId,
+              activatedAt: j.created_at,
+            });
+          } else {
+            idsToSeed.push(String(j.id));
+          }
+        }
+        saveSeenLiveJobs(user.uid, idsToSeed);
+        return;
+      }
+
+      for (const j of activeJobs) {
+        if (!j?.id) continue;
+        const jobId = String(j.id);
+        const occupied = Number(j.occupied_slots ?? j.occupiedSlots ?? 0);
+        const total = Number(j.total_slots ?? j.totalSlots ?? 0);
+        if (occupied >= total && total > 0) {
+          if (!existingSeen.includes(jobId)) {
+            saveSeenLiveJobs(user.uid, [jobId, ...getSeenLiveJobs(user.uid)]);
+          }
+          continue;
+        }
+        if (!getSeenLiveJobs(user.uid).includes(jobId)) {
+          notifyLiveJobForUser({
+            id: jobId,
+            title: j.title,
+            pricePerTask: j.price_per_task ?? j.pricePerTask,
+            totalSlots: total,
+            ownerId: j.owner_id ?? j.employer_id ?? j.ownerId,
+            activatedAt: j.created_at,
+          });
+        }
+      }
+    } catch {}
+  };
+
+  const syncUserStatusNotifications = async () => {
+    if (!user?.uid) return;
+    try {
+      const snapKey = `iz_status_snapshot_${user.uid}`;
+      const rawSnap = localStorage.getItem(snapKey);
+      const isFirstSeed = rawSnap === null;
+      const snap: {
+        subs: Record<string, string>;
+        deps: Record<string, string>;
+        wds: Record<string, string>;
+        jobs: Record<string, string>;
+        ads: Record<string, string>;
+        empSubs: string[];
+      } = rawSnap
+        ? JSON.parse(rawSnap)
+        : { subs: {}, deps: {}, wds: {}, jobs: {}, ads: {}, empSubs: [] };
+
+      const recentWindow = Date.now() - 15 * 60 * 1000;
+
+      const [subsRes, depsRes, wdsRes, jobsRes, adsRes] = await Promise.all([
+        supabase
+          .from('submissions')
+          .select('id, status, rejection_reason, reviewed_at, created_at')
+          .eq('worker_id', user.uid)
+          .order('created_at', { ascending: false })
+          .limit(20),
+        supabase
+          .from('deposit_requests')
+          .select('id, amount, status, created_at')
+          .eq('user_id', user.uid)
+          .order('created_at', { ascending: false })
+          .limit(15),
+        supabase
+          .from('withdraw_requests')
+          .select('id, amount, status, created_at')
+          .eq('user_id', user.uid)
+          .order('created_at', { ascending: false })
+          .limit(15),
+        supabase
+          .from('jobs')
+          .select('id, title, status, rejection_reason, created_at')
+          .eq('owner_id', user.uid)
+          .order('created_at', { ascending: false })
+          .limit(20),
+        supabase
+          .from('ads')
+          .select('id, title, status, created_at')
+          .eq('owner_id', user.uid)
+          .order('created_at', { ascending: false })
+          .limit(15),
+      ]);
+
+      // 1. Worker Submissions status changes
+      if (!subsRes.error && Array.isArray(subsRes.data)) {
+        for (const row of subsRes.data) {
+          const prevStatus = snap.subs[row.id];
+          const isTerminal = row.status === 'approved' || row.status === 'rejected';
+          const reviewedTs = row.reviewed_at ? new Date(row.reviewed_at).getTime() : 0;
+          const shouldNotify =
+            isTerminal &&
+            ((prevStatus && prevStatus !== row.status) ||
+              (!prevStatus && (!isFirstSeed || (!Number.isNaN(reviewedTs) && reviewedTs >= recentWindow))));
+
+          if (shouldNotify) {
+            saveLocalNotification(
+              user.uid,
+              {
+                id: `sub_${row.id}_${row.status}`,
+                title: row.status === 'approved' ? 'টাস্ক অ্যাপ্রুভড! 🏆' : 'টাস্ক রিজেক্টেড ⚠️',
+                message:
+                  row.status === 'approved'
+                    ? 'আপনার সাবমিট করা কাজের প্রমাণপত্র সফলভাবে অ্যাপ্রুভ করা হয়েছে এবং আয় আপনার আর্নিং ব্যালেন্সে যোগ হয়েছে!'
+                    : `আপনার সাবমিট করা কাজটির প্রমাণপত্র গ্রহণযোগ্য হয়নি।${row.rejection_reason ? ` কারণ: ${row.rejection_reason}` : ''}`,
+                type: 'submission',
+                url: '/submitted-jobs',
+              },
+              { skipRemoteSync: true }
+            );
+          }
+          snap.subs[row.id] = row.status;
+        }
+      }
+
+      // 2. Deposit status changes
+      if (!depsRes.error && Array.isArray(depsRes.data)) {
+        for (const row of depsRes.data) {
+          const prevStatus = snap.deps[row.id];
+          const isTerminal = row.status === 'approved' || row.status === 'rejected';
+          const createdTs = row.created_at ? new Date(row.created_at).getTime() : 0;
+          const shouldNotify =
+            isTerminal &&
+            ((prevStatus && prevStatus !== row.status) ||
+              (!prevStatus && (!isFirstSeed || (!Number.isNaN(createdTs) && createdTs >= recentWindow))));
+
+          if (shouldNotify) {
+            const amt = Number(row.amount || 0);
+            saveLocalNotification(
+              user.uid,
+              {
+                id: `dep_${row.id}_${row.status}`,
+                title: row.status === 'approved' ? 'ডিপোজিট অ্যাপ্রুভড! 🎉' : 'ডিপোজিট রিকোয়েস্ট রিজেক্টেড ❌',
+                message:
+                  row.status === 'approved'
+                    ? `আপনার $${amt.toFixed(2)} (৳${Math.round(amt * 100)}) ডিপোজিট সফলভাবে অ্যাপ্রুভ হয়েছে ওয়ালেটে জমা হয়েছে।`
+                    : `আপনার $${amt.toFixed(2)} (৳${Math.round(amt * 100)}) ডিপোজিট রিকোয়েস্টটি প্রত্যাখান করা হয়েছে।`,
+                type: 'deposit',
+                url: '/deposit',
+              },
+              { skipRemoteSync: true }
+            );
+          }
+          snap.deps[row.id] = row.status;
+        }
+      }
+
+      // 3. Withdrawal status changes
+      if (!wdsRes.error && Array.isArray(wdsRes.data)) {
+        for (const row of wdsRes.data) {
+          const prevStatus = snap.wds[row.id];
+          const isTerminal = row.status === 'approved' || row.status === 'rejected';
+          const createdTs = row.created_at ? new Date(row.created_at).getTime() : 0;
+          const shouldNotify =
+            isTerminal &&
+            ((prevStatus && prevStatus !== row.status) ||
+              (!prevStatus && (!isFirstSeed || (!Number.isNaN(createdTs) && createdTs >= recentWindow))));
+
+          if (shouldNotify) {
+            const amt = Number(row.amount || 0);
+            saveLocalNotification(
+              user.uid,
+              {
+                id: `wd_${row.id}_${row.status}`,
+                title: row.status === 'approved' ? 'উইথড্র সফল হয়েছে! 💸' : 'উইথড্র রিজেক্টেড ও রিফান্ডেড ❌',
+                message:
+                  row.status === 'approved'
+                    ? `আপনার $${amt.toFixed(2)} (৳${Math.round(amt * 100)}) উত্তোলন রিকোয়েস্ট সফলভাবে সম্পন্ন হয়েছে।`
+                    : `আপনার $${amt.toFixed(2)} (৳${Math.round(amt * 100)}) উইথড্র রিকোয়েস্ট রিজেক্ট করা হয়েছে এবং টাকা আপনার আর্নিং ব্যালেন্সে ফেরত দেওয়া হয়েছে।`,
+                type: 'withdrawal',
+                url: '/withdraw',
+              },
+              { skipRemoteSync: true }
+            );
+          }
+          snap.wds[row.id] = row.status;
+        }
+      }
+
+      // 4. Employer owned jobs status + incoming worker proofs
+      if (!jobsRes.error && Array.isArray(jobsRes.data)) {
+        const ownedJobMap = new Map<string, string>();
+        for (const row of jobsRes.data) {
+          ownedJobMap.set(row.id, row.title || 'Job');
+          const prevStatus = snap.jobs[row.id];
+          const isTerminal = row.status === 'active' || row.status === 'rejected';
+          if (isTerminal && prevStatus && prevStatus !== row.status) {
+            saveLocalNotification(
+              user.uid,
+              {
+                id: `job_${row.id}_${row.status}`,
+                title: row.status === 'active' ? 'জব ক্যাম্পেইন লাইভ! 🚀' : 'জব পোস্ট বাতিল ও রিফান্ড ⚠️',
+                message:
+                  row.status === 'active'
+                    ? `আপনার পোস্ট করা নতুন মিশন "${row.title || 'Job'}" অ্যাডমিন কর্তৃক অনুমোদিত হয়েছে এবং লাইভ করা হয়েছে।`
+                    : `আপনার পোস্ট করা মিশন "${row.title || 'Job'}" বাতিল করা হয়েছে।${row.rejection_reason ? ` কারণ: ${row.rejection_reason}` : ''}`,
+                type: 'announcement',
+                url: '/my-jobs',
+              },
+              { skipRemoteSync: true }
+            );
+          }
+          snap.jobs[row.id] = row.status;
+        }
+
+        const ownedIds = Array.from(ownedJobMap.keys());
+        if (ownedIds.length > 0) {
+          const { data: incomingSubs } = await supabase
+            .from('submissions')
+            .select('id, job_id, worker_id, status, created_at')
+            .in('job_id', ownedIds.slice(0, 20))
+            .eq('status', 'pending')
+            .order('created_at', { ascending: false })
+            .limit(20);
+
+          if (Array.isArray(incomingSubs)) {
+            const seenEmpSubs = new Set(snap.empSubs || []);
+            for (const sub of incomingSubs) {
+              if (!sub?.id || sub.worker_id === user.uid) continue;
+              const createdTs = sub.created_at ? new Date(sub.created_at).getTime() : 0;
+              if (!seenEmpSubs.has(sub.id) && (!isFirstSeed || (!Number.isNaN(createdTs) && createdTs >= recentWindow))) {
+                const jobTitle = ownedJobMap.get(sub.job_id) || 'Micro-Job';
+                saveLocalNotification(
+                  user.uid,
+                  {
+                    id: `emp_sub_${sub.id}`,
+                    title: 'নতুন টাস্ক সাবমিশন! 📋',
+                    message: `আপনার জব "${jobTitle}"-এ একজন কর্মী কাজের প্রমাণপত্র জমা দিয়েছেন। My Jobs থেকে পর্যালোচনা করুন।`,
+                    type: 'submission',
+                    url: '/my-jobs',
+                  },
+                  { skipRemoteSync: true }
+                );
+              }
+              seenEmpSubs.add(sub.id);
+            }
+            snap.empSubs = Array.from(seenEmpSubs).slice(-200);
+          }
+        }
+      }
+
+      // 5. Ads status changes
+      if (!adsRes.error && Array.isArray(adsRes.data)) {
+        for (const row of adsRes.data) {
+          const prevStatus = snap.ads[row.id];
+          const isTerminal = row.status === 'active' || row.status === 'expired' || row.status === 'rejected';
+          if (isTerminal && prevStatus && prevStatus !== row.status) {
+            saveLocalNotification(
+              user.uid,
+              {
+                id: `ad_${row.id}_${row.status}`,
+                title: row.status === 'active' ? 'বিজ্ঞাপন অনুমোদন সফল! 📢' : 'বিজ্ঞাপন রিজেক্টেড ও রিফান্ডেড ⚠️',
+                message:
+                  row.status === 'active'
+                    ? `আপনার স্পন্সরকৃত অ্যাড ক্যাম্পেইন "${row.title || 'Ad'}" সক্রিয় ও লাইভ করা হয়েছে।`
+                    : `আপনার স্পন্সরকৃত অ্যাড ক্যাম্পেইন "${row.title || 'Ad'}" বাতিল করা হয়েছে এবং ব্যালেন্স রিফান্ড করা হয়েছে।`,
+                type: 'announcement',
+                url: '/posted-ads',
+              },
+              { skipRemoteSync: true }
+            );
+          }
+          snap.ads[row.id] = row.status;
+        }
+      }
+
+      localStorage.setItem(snapKey, JSON.stringify(snap));
+    } catch {}
+  };
+
   useEffect(() => {
     if (user?.uid) {
       fetchUserData();
+
+      const runFullSync = () => {
+        fetchUserData();
+        void syncRemoteUserNotifications(user.uid);
+        void syncLatestBroadcast();
+        void syncNewLiveJobs();
+        void syncUserStatusNotifications();
+      };
 
       const channel = supabase
         .channel(`layout-user-${user.uid}`)
@@ -134,6 +555,7 @@ export default function DashboardLayout() {
                   ? 'আপনার সাবমিট করা কাজের প্রমাণপত্র সফলভাবে অ্যাপ্রুভ করা হয়েছে এবং আয় আপনার আর্নিং ব্যালেন্সে যোগ হয়েছে!'
                   : `আপনার সাবমিট করা কাজটির প্রমাণপত্র গ্রহণযোগ্য হয়নি।${row.rejection_reason ? ` কারণ: ${row.rejection_reason}` : ''}`,
                 type: 'submission',
+                url: '/submitted-jobs',
               }, { skipRemoteSync: true });
             }
           }
@@ -150,6 +572,7 @@ export default function DashboardLayout() {
                 ? `আপনার $${amt.toFixed(2)} (৳${Math.round(amt * 100)}) ডিপোজিট সফলভাবে অ্যাপ্রুভ হয়েছে ওয়ালেটে জমা হয়েছে।`
                 : `আপনার $${amt.toFixed(2)} (৳${Math.round(amt * 100)}) ডিপোজিট রিকোয়েস্টটি প্রত্যাখান করা হয়েছে।`,
               type: 'deposit',
+              url: '/deposit',
             }, { skipRemoteSync: true });
           }
         })
@@ -165,21 +588,39 @@ export default function DashboardLayout() {
                 ? `আপনার $${amt.toFixed(2)} (৳${Math.round(amt * 100)}) উত্তোলন রিকোয়েস্ট সফলভাবে সম্পন্ন হয়েছে।`
                 : `আপনার $${amt.toFixed(2)} (৳${Math.round(amt * 100)}) উইথড্র রিকোয়েস্ট রিজেক্ট করা হয়েছে এবং টাকা আপনার আর্নিং ব্যালেন্সে ফেরত দেওয়া হয়েছে।`,
               type: 'withdrawal',
+              url: '/withdraw',
             }, { skipRemoteSync: true });
           }
         })
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'jobs', filter: `owner_id=eq.${user.uid}` }, (payload: any) => {
-          fetchUserData();
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, (payload: any) => {
           const row = payload?.new;
-          if (row && (row.status === 'active' || row.status === 'rejected')) {
-            saveLocalNotification(user.uid, {
-              id: `job_${row.id}_${row.status}`,
-              title: row.status === 'active' ? 'জব ক্যাম্পেইন লাইভ! 🚀' : 'জব পোস্ট বাতিল ও রিফান্ড ⚠️',
-              message: row.status === 'active'
-                ? `আপনার পোস্ট করা নতুন মিশন "${row.title || 'Job'}" অ্যাডমিন কর্তৃক অনুমোদিত হয়েছে এবং লাইভ করা হয়েছে।`
-                : `আপনার পোস্ট করা মিশন "${row.title || 'Job'}" বাতিল করা হয়েছে।${row.rejection_reason ? ` কারণ: ${row.rejection_reason}` : ''}`,
-              type: 'announcement',
-            }, { skipRemoteSync: true });
+          if (!row) return;
+          const rowOwnerId = row.owner_id || row.employer_id;
+
+          if (rowOwnerId === user.uid) {
+            fetchUserData();
+            if (row.status === 'active' || row.status === 'rejected') {
+              saveLocalNotification(user.uid, {
+                id: `job_${row.id}_${row.status}`,
+                title: row.status === 'active' ? 'জব ক্যাম্পেইন লাইভ! 🚀' : 'জব পোস্ট বাতিল ও রিফান্ড ⚠️',
+                message: row.status === 'active'
+                  ? `আপনার পোস্ট করা নতুন মিশন "${row.title || 'Job'}" অ্যাডমিন কর্তৃক অনুমোদিত হয়েছে এবং লাইভ করা হয়েছে।`
+                  : `আপনার পোস্ট করা মিশন "${row.title || 'Job'}" বাতিল করা হয়েছে।${row.rejection_reason ? ` কারণ: ${row.rejection_reason}` : ''}`,
+                type: 'announcement',
+                url: '/my-jobs',
+              }, { skipRemoteSync: true });
+            }
+          }
+
+          if (row.status === 'active') {
+            notifyLiveJobForUser({
+              id: row.id,
+              title: row.title,
+              pricePerTask: row.price_per_task ?? row.pricePerTask,
+              totalSlots: row.total_slots ?? row.totalSlots,
+              ownerId: rowOwnerId,
+              activatedAt: new Date().toISOString(),
+            });
           }
         })
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'ads', filter: `owner_id=eq.${user.uid}` }, (payload: any) => {
@@ -193,54 +634,79 @@ export default function DashboardLayout() {
                 ? `আপনার স্পন্সরকৃত অ্যাড ক্যাম্পেইন "${row.title || 'Ad'}" সক্রিয় ও লাইভ করা হয়েছে।`
                 : `আপনার স্পন্সরকৃত অ্যাড ক্যাম্পেইন "${row.title || 'Ad'}" বাতিল করা হয়েছে এবং ব্যালেন্স রিফান্ড করা হয়েছে।`,
               type: 'announcement',
+              url: '/posted-ads',
             }, { skipRemoteSync: true });
           }
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, (payload: any) => {
           const changedKey = payload?.new?.key;
-          if (changedKey === 'latest_broadcast') {
-            syncLatestBroadcast();
-          } else if (changedKey === `user_notifs_${user.uid}`) {
-            syncRemoteUserNotifications(user.uid);
+          if (changedKey === 'latest_broadcast' || changedKey === 'admin_broadcasts' || changedKey === 'deleted_broadcast_ids') {
+            void syncLatestBroadcast();
+          } else if (changedKey === `user_notifs_${user.uid}` || changedKey === `user_deleted_notifs_${user.uid}`) {
+            void syncRemoteUserNotifications(user.uid);
+          } else if (changedKey === 'latest_live_job') {
+            void syncNewLiveJobs();
           } else if (changedKey === 'platform_controls') {
-            fetchNotice();
+            void fetchNotice();
           }
         })
         .subscribe();
 
-      const handleRefresh = () => {
-        fetchUserData();
-        syncRemoteUserNotifications(user.uid);
-        syncLatestBroadcast();
-      };
       const handleVisibility = () => {
         if (document.visibilityState === 'visible') {
-          fetchUserData();
-          syncRemoteUserNotifications(user.uid);
-          syncLatestBroadcast();
+          runFullSync();
         }
       };
 
-      window.addEventListener('submission_updated', handleRefresh);
-      window.addEventListener('iz_users_updated', handleRefresh);
-      window.addEventListener('focus', handleRefresh);
+      const handleJobWentLive = (e: any) => {
+        if (e?.detail?.id) {
+          notifyLiveJobForUser(e.detail);
+        } else {
+          void syncNewLiveJobs();
+        }
+      };
+
+      const handleStorageChange = (e: StorageEvent) => {
+        if (!e.key) return;
+        if (e.key === `iz_user_notifications_${user.uid}`) {
+          fetchUserNotifications();
+          void flushPendingDeviceNotifications(user.uid);
+        } else if (e.key === 'iz_latest_broadcast' || e.key === 'iz_admin_broadcasts' || e.key === 'iz_deleted_broadcast_ids') {
+          void syncLatestBroadcast();
+        } else if (e.key === 'iz_latest_live_job') {
+          void syncNewLiveJobs();
+        } else if (e.key === 'iz_platform_controls') {
+          void fetchNotice();
+        }
+      };
+
+      const pollInterval = window.setInterval(runFullSync, 12000);
+
+      window.addEventListener('submission_updated', runFullSync);
+      window.addEventListener('iz_users_updated', runFullSync);
+      window.addEventListener('iz_jobs_updated', syncNewLiveJobs);
+      window.addEventListener('iz_job_went_live', handleJobWentLive);
+      window.addEventListener('online', runFullSync);
+      window.addEventListener('focus', runFullSync);
+      window.addEventListener('storage', handleStorageChange);
       document.addEventListener('visibilitychange', handleVisibility);
 
       return () => {
+        window.clearInterval(pollInterval);
         supabase.removeChannel(channel);
-        window.removeEventListener('submission_updated', handleRefresh);
-        window.removeEventListener('iz_users_updated', handleRefresh);
-        window.removeEventListener('focus', handleRefresh);
+        window.removeEventListener('submission_updated', runFullSync);
+        window.removeEventListener('iz_users_updated', runFullSync);
+        window.removeEventListener('iz_jobs_updated', syncNewLiveJobs);
+        window.removeEventListener('iz_job_went_live', handleJobWentLive);
+        window.removeEventListener('online', runFullSync);
+        window.removeEventListener('focus', runFullSync);
+        window.removeEventListener('storage', handleStorageChange);
         document.removeEventListener('visibilitychange', handleVisibility);
       };
     }
   }, [user?.uid]);
 
-  const [notice, setNotice] = useState<{ enabled: boolean; type: string; text: string }>({
-    enabled: false,
-    type: 'info',
-    text: '',
-  });
+  const [bannerNotices, setBannerNotices] = useState<AdminBannerNotice[]>([]);
   const [isNoticeDismissed, setIsNoticeDismissed] = useState(false);
   const [notifications, setNotifications] = useState<UserNotificationItem[]>([]);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
@@ -252,24 +718,29 @@ export default function DashboardLayout() {
     const state = getNotificationPermissionState();
     setNotifPermission(state);
     if (state === 'granted') {
-      void registerNotificationServiceWorker();
+      void registerNotificationServiceWorker().then(() => {
+        if (user?.uid) {
+          void flushPendingDeviceNotifications(user.uid);
+        }
+      });
     }
-  }, []);
+  }, [user?.uid]);
 
   const handleEnableNativeNotifications = async () => {
     const perm = await requestNativeNotificationPermission();
     setNotifPermission(perm);
     if (perm === 'granted') {
       const title = 'ফোনের নোটিফিকেশন সচল হয়েছে! 🔔';
-      const message = 'আপনার ফোনে এখন সকল টাস্ক এপ্রুভ/রিজেক্ট, ডিপোজিট, উইথড্র ও নোটিশ এর ইনস্ট্যান্ট নোটিফিকেশন চলে আসবে।';
-      const result = await showDeviceNotification(title, message, { tag: 'welcome_push_enabled' });
+      const message = 'আপনার ফোনে এখন সকল নতুন জব, টাস্ক এপ্রুভ/রিজেক্ট, ডিপোজিট, উইথড্র ও নোটিশ এর ইনস্ট্যান্ট নোটিফিকেশন চলে আসবে।';
+      const result = await showDeviceNotification(title, message, { tag: 'welcome_push_enabled', url: '/notifications' });
       if (user?.uid) {
         saveLocalNotification(user.uid, {
           id: `welcome_push_${Date.now()}`,
           title,
           message,
           type: 'announcement',
-        }, { skipRemoteSync: true, skipNative: true });
+        }, { skipRemoteSync: true, skipNative: true, markNativeDone: true });
+        void flushPendingDeviceNotifications(user.uid);
       }
       import('react-hot-toast').then(({ default: toast }) => {
         if (result.shown) {
@@ -295,6 +766,24 @@ export default function DashboardLayout() {
     setNotifications(list);
   };
 
+  const applyPlatformControlsToBanners = (merged: any) => {
+    if (Array.isArray(merged?.user_notices)) {
+      setBannerNotices(merged.user_notices.filter((n: AdminBannerNotice) => n && n.enabled && n.text?.trim()));
+    } else if (merged?.user_notice_enabled && merged?.user_notice_text) {
+      setBannerNotices([
+        {
+          id: 'notice_legacy_1',
+          type: merged.user_notice_type || 'info',
+          text: merged.user_notice_text,
+          enabled: true,
+          created_at: merged.updated_at || new Date().toISOString(),
+        },
+      ]);
+    } else {
+      setBannerNotices([]);
+    }
+  };
+
   const fetchNotice = async () => {
     try {
       let localCtrls = null;
@@ -315,43 +804,84 @@ export default function DashboardLayout() {
       }
 
       const merged = val || localCtrls || {};
-      setNotice({
-        enabled: Boolean(merged.user_notice_enabled),
-        type: merged.user_notice_type || 'info',
-        text: merged.user_notice_text || '',
-      });
+      applyPlatformControlsToBanners(merged);
     } catch {}
   };
 
   const syncLatestBroadcast = async () => {
     if (!user?.uid) return;
     try {
+      let broadcastsList: AdminBroadcastMessage[] = [];
       let latestBc: any = null;
-      const { data } = await supabase
-        .from('settings')
-        .select('*')
-        .eq('key', 'latest_broadcast')
-        .maybeSingle();
+      let deletedIds = new Set<string>(getDeletedBroadcastIdsLocal());
 
-      if (data?.value) {
-        latestBc = typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
+      const { data: rows, error } = await supabase
+        .from('settings')
+        .select('key, value')
+        .in('key', ['admin_broadcasts', 'latest_broadcast', 'deleted_broadcast_ids']);
+
+      if (!error && Array.isArray(rows)) {
+        for (const row of rows) {
+          const parsed = typeof row.value === 'string' ? (() => { try { return JSON.parse(row.value); } catch { return null; } })() : row.value;
+          if (row.key === 'deleted_broadcast_ids' && Array.isArray(parsed)) {
+            const cleanDeleted = parsed.map(String);
+            saveDeletedBroadcastIdsLocal(cleanDeleted);
+            deletedIds = new Set(cleanDeleted);
+          } else if (row.key === 'admin_broadcasts' && Array.isArray(parsed)) {
+            broadcastsList = parsed;
+          } else if (row.key === 'latest_broadcast' && parsed?.text) {
+            latestBc = parsed;
+          }
+        }
       } else {
-        const localStr = localStorage.getItem('iz_latest_broadcast');
-        if (localStr) latestBc = JSON.parse(localStr);
+        try {
+          const localListStr = localStorage.getItem('iz_admin_broadcasts');
+          if (localListStr) {
+            const parsed = JSON.parse(localListStr);
+            if (Array.isArray(parsed)) broadcastsList = parsed;
+          }
+        } catch {}
+        try {
+          const localStr = localStorage.getItem('iz_latest_broadcast');
+          if (localStr) latestBc = JSON.parse(localStr);
+        } catch {}
       }
 
-      if (latestBc && latestBc.text) {
-        const rawBcId = String(latestBc.id || 'default_bc');
+      // Remove any broadcasts deleted by Admin from user's local notification list
+      const allDeletedNotifIds: string[] = [];
+      deletedIds.forEach((rawId) => {
+        allDeletedNotifIds.push(rawId);
+        if (!rawId.startsWith('bc_')) allDeletedNotifIds.push(`bc_${rawId}`);
+      });
+      if (allDeletedNotifIds.length > 0) {
+        removeUserNotificationsByIds(user.uid, allDeletedNotifIds);
+      }
+
+      if (broadcastsList.length === 0 && latestBc && latestBc.text) {
+        broadcastsList = [latestBc];
+      }
+
+      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      // Deliver active non-deleted broadcasts oldest-first so newest stays at top
+      const ordered = [...broadcastsList].reverse();
+      for (const bc of ordered) {
+        if (!bc || !bc.text) continue;
+        const rawBcId = String(bc.id || 'default_bc');
         const normalizedId = rawBcId.startsWith('bc_') ? rawBcId : `bc_${rawBcId}`;
+        if (deletedIds.has(rawBcId) || deletedIds.has(normalizedId)) continue;
+
+        const bcTs = bc.created_at ? new Date(bc.created_at).getTime() : Date.now();
+        if (!Number.isNaN(bcTs) && bcTs < sevenDaysAgo) continue;
+
         const receivedKey = `iz_user_received_bc_${user.uid}_${normalizedId}`;
         if (!localStorage.getItem(receivedKey)) {
           localStorage.setItem(receivedKey, 'true');
           saveLocalNotification(user.uid, {
             id: normalizedId,
-            title: '📢 অ্যাডমিন অফিশিয়াল ব্রডকাস্ট নোটিশ',
-            message: latestBc.text,
+            title: bc.title || '📢 অ্যাডমিন অফিশিয়াল ব্রডকাস্ট নোটিশ',
+            message: bc.text,
             type: 'broadcast',
-            created_at: latestBc.created_at || new Date().toISOString(),
+            created_at: bc.created_at || new Date().toISOString(),
           }, { skipRemoteSync: true });
         }
       }
@@ -364,15 +894,13 @@ export default function DashboardLayout() {
     syncLatestBroadcast();
     if (user?.uid) {
       void syncRemoteUserNotifications(user.uid);
+      void syncNewLiveJobs();
+      void syncUserStatusNotifications();
     }
 
     const handleControlsUpdated = (e: any) => {
       if (e.detail) {
-        setNotice({
-          enabled: Boolean(e.detail.user_notice_enabled),
-          type: e.detail.user_notice_type || 'info',
-          text: e.detail.user_notice_text || '',
-        });
+        applyPlatformControlsToBanners(e.detail);
         setIsNoticeDismissed(false);
       }
     };
@@ -391,7 +919,7 @@ export default function DashboardLayout() {
           localStorage.setItem(`iz_user_received_bc_${user.uid}_${normalizedId}`, 'true');
           saveLocalNotification(user.uid, {
             id: normalizedId,
-            title: '📢 অ্যাডমিন অফিশিয়াল ব্রডকাস্ট নোটিশ',
+            title: e.detail.title || '📢 অ্যাডমিন অফিশিয়াল ব্রডকাস্ট নোটিশ',
             message: e.detail.text,
             type: 'broadcast',
             created_at: e.detail.created_at || new Date().toISOString(),
@@ -413,13 +941,28 @@ export default function DashboardLayout() {
       }
     };
 
+    const handleBroadcastDeleted = (e: any) => {
+      if (!user?.uid) return;
+      const ids: string[] = [];
+      if (e?.detail?.id) ids.push(String(e.detail.id));
+      if (Array.isArray(e?.detail?.deletedIds)) {
+        e.detail.deletedIds.forEach((x: any) => ids.push(String(x)));
+      }
+      const normalizedIds = ids.flatMap((id) => (id.startsWith('bc_') ? [id] : [id, `bc_${id}`]));
+      if (normalizedIds.length > 0) {
+        removeUserNotificationsByIds(user.uid, normalizedIds);
+      }
+    };
+
     window.addEventListener('iz_platform_controls_updated', handleControlsUpdated);
     window.addEventListener('iz_broadcast_notification', handleBroadcastNotification);
+    window.addEventListener('iz_broadcast_deleted', handleBroadcastDeleted);
     window.addEventListener('iz_user_notifications_updated', handleUserNotifsUpdated);
 
     return () => {
       window.removeEventListener('iz_platform_controls_updated', handleControlsUpdated);
       window.removeEventListener('iz_broadcast_notification', handleBroadcastNotification);
+      window.removeEventListener('iz_broadcast_deleted', handleBroadcastDeleted);
       window.removeEventListener('iz_user_notifications_updated', handleUserNotifsUpdated);
     };
   }, [user?.uid]);
@@ -895,44 +1438,49 @@ export default function DashboardLayout() {
               </div>
             </div>
           )}
-          {/* Global Admin Announcement Notice Banner (Mandatory Notice) */}
-          {notice.enabled && notice.text && (
-            <div
-              className={`relative rounded-2xl p-4 sm:p-5 shadow-lg border transition-all flex items-start justify-between gap-3 ${
-                notice.type === 'warning'
-                  ? 'bg-amber-500/10 border-amber-500/30 text-amber-900 dark:text-amber-200'
-                  : notice.type === 'success'
-                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-900 dark:text-emerald-200'
-                  : notice.type === 'promo'
-                  ? 'bg-gradient-to-r from-purple-900/90 via-indigo-900/90 to-purple-950/90 border-purple-500/40 text-white shadow-purple-950/50'
-                  : 'bg-purple-500/10 border-purple-500/30 text-purple-950 dark:text-purple-200'
-              }`}
-            >
-              <div className="flex items-start gap-3.5 min-w-0">
-                <div className={`p-2 rounded-xl shrink-0 ${
-                  notice.type === 'promo'
-                    ? 'bg-amber-400 text-slate-950'
-                    : 'bg-purple-600/10 dark:bg-amber-400/20 text-purple-600 dark:text-amber-400'
-                }`}>
-                  {notice.type === 'promo' ? (
-                    <Sparkles className="w-5 h-5 fill-current" />
-                  ) : notice.type === 'warning' ? (
-                    <AlertTriangle className="w-5 h-5" />
-                  ) : (
-                    <Megaphone className="w-5 h-5" />
-                  )}
-                </div>
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-600/20 dark:bg-amber-400/20 text-purple-700 dark:text-amber-300">
-                      👑 MANDATORY NOTICE (অফিশিয়াল নোটিশ)
-                    </span>
+          {/* Global Admin Announcement Notice Banners (Mandatory Notices) */}
+          {bannerNotices.length > 0 && (
+            <div className="space-y-3">
+              {bannerNotices.map((bn) => (
+                <div
+                  key={bn.id}
+                  className={`relative rounded-2xl p-4 sm:p-5 shadow-lg border transition-all flex items-start justify-between gap-3 ${
+                    bn.type === 'warning'
+                      ? 'bg-amber-500/10 border-amber-500/30 text-amber-900 dark:text-amber-200'
+                      : bn.type === 'success'
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-900 dark:text-emerald-200'
+                      : bn.type === 'promo'
+                      ? 'bg-gradient-to-r from-purple-900/90 via-indigo-900/90 to-purple-950/90 border-purple-500/40 text-white shadow-purple-950/50'
+                      : 'bg-purple-500/10 border-purple-500/30 text-purple-950 dark:text-purple-200'
+                  }`}
+                >
+                  <div className="flex items-start gap-3.5 min-w-0">
+                    <div className={`p-2 rounded-xl shrink-0 ${
+                      bn.type === 'promo'
+                        ? 'bg-amber-400 text-slate-950'
+                        : 'bg-purple-600/10 dark:bg-amber-400/20 text-purple-600 dark:text-amber-400'
+                    }`}>
+                      {bn.type === 'promo' ? (
+                        <Sparkles className="w-5 h-5 fill-current" />
+                      ) : bn.type === 'warning' ? (
+                        <AlertTriangle className="w-5 h-5" />
+                      ) : (
+                        <Megaphone className="w-5 h-5" />
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-600/20 dark:bg-amber-400/20 text-purple-700 dark:text-amber-300">
+                          👑 MANDATORY NOTICE (অফিশিয়াল নোটিশ)
+                        </span>
+                      </div>
+                      <p className="text-xs sm:text-sm font-bold leading-relaxed">
+                        {bn.text}
+                      </p>
+                    </div>
                   </div>
-                  <p className="text-xs sm:text-sm font-bold leading-relaxed">
-                    {notice.text}
-                  </p>
                 </div>
-              </div>
+              ))}
             </div>
           )}
 

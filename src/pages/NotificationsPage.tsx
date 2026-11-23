@@ -12,7 +12,9 @@ import {
   Filter,
   ArrowLeft,
   Clock,
-  Sparkles
+  Sparkles,
+  Briefcase,
+  ArrowRight
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
@@ -25,6 +27,8 @@ import {
   registerNotificationServiceWorker,
   showDeviceNotification,
   syncRemoteUserNotifications,
+  flushPendingDeviceNotifications,
+  clearLocalNotifications,
   isInsideEmbeddedIframe
 } from '../lib/localFallbackStore';
 import toast from 'react-hot-toast';
@@ -41,24 +45,29 @@ export default function NotificationsPage() {
     const state = getNotificationPermissionState();
     setPermissionState(state);
     if (state === 'granted') {
-      void registerNotificationServiceWorker();
+      void registerNotificationServiceWorker().then(() => {
+        if (user?.uid) {
+          void flushPendingDeviceNotifications(user.uid);
+        }
+      });
     }
-  }, []);
+  }, [user?.uid]);
 
   const handleRequestPermission = async () => {
     const perm = await requestNativeNotificationPermission();
     setPermissionState(perm);
     if (perm === 'granted') {
       const title = 'ফোনের সিস্টেমে নোটিফিকেশন একটিভ! 🔔';
-      const message = 'এখন আপনার ডিভাইসে সমস্ত গুরুত্বপূর্ণ আপডেট সরাসরি নোটিফিকেশনে চলে আসবে।';
-      const result = await showDeviceNotification(title, message, { tag: 'welcome_push_page' });
+      const message = 'এখন আপনার ডিভাইসে সমস্ত নতুন জব, টাস্ক, ডিপোজিট ও উইথড্র আপডেট সরাসরি নোটিফিকেশনে চলে আসবে।';
+      const result = await showDeviceNotification(title, message, { tag: 'welcome_push_page', url: '/notifications' });
       if (user?.uid) {
         saveLocalNotification(user.uid, {
           id: `welcome_push_${Date.now()}`,
           title,
           message,
           type: 'announcement',
-        }, { skipRemoteSync: true, skipNative: true });
+        }, { skipRemoteSync: true, skipNative: true, markNativeDone: true });
+        void flushPendingDeviceNotifications(user.uid);
       }
       if (result.shown) {
         toast.success('ফোনের নোটিফিকেশন চালু হয়েছে! 🎉 আপনার ফোনের নোটিফিকেশন বার চেক করুন।');
@@ -123,9 +132,8 @@ export default function NotificationsPage() {
   const handleClearAll = () => {
     if (!user?.uid) return;
     try {
-      localStorage.removeItem(`iz_user_notifications_${user.uid}`);
+      clearLocalNotifications(user.uid);
       setNotifications([]);
-      window.dispatchEvent(new CustomEvent('iz_user_notifications_updated', { detail: { userId: user.uid } }));
       toast.success('সকল নোটিফিকেশন মুছে ফেলা হয়েছে!');
     } catch {}
   };
@@ -136,7 +144,7 @@ export default function NotificationsPage() {
     if (activeFilter === 'deposit') return item.type === 'deposit';
     if (activeFilter === 'withdrawal') return item.type === 'withdrawal';
     if (activeFilter === 'task') return item.type === 'task' || item.type === 'submission' || item.type === 'job';
-    if (activeFilter === 'broadcast') return item.type === 'broadcast' || item.type === 'general';
+    if (activeFilter === 'broadcast') return item.type === 'broadcast' || item.type === 'general' || item.type === 'announcement';
     return true;
   });
 
@@ -156,12 +164,23 @@ export default function NotificationsPage() {
             <Banknote className="w-5 h-5" />
           </div>
         );
+      case 'job':
+        return (
+          <div className="w-10 h-10 rounded-2xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 flex items-center justify-center shrink-0">
+            <Briefcase className="w-5 h-5" />
+          </div>
+        );
       case 'task':
       case 'submission':
-      case 'job':
         return (
           <div className="w-10 h-10 rounded-2xl bg-purple-500/10 text-purple-600 dark:text-amber-400 border border-purple-500/20 flex items-center justify-center shrink-0">
             <CheckSquare className="w-5 h-5" />
+          </div>
+        );
+      case 'announcement':
+        return (
+          <div className="w-10 h-10 rounded-2xl bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 flex items-center justify-center shrink-0">
+            <Bell className="w-5 h-5" />
           </div>
         );
       case 'broadcast':
@@ -180,14 +199,35 @@ export default function NotificationsPage() {
         return 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30';
       case 'withdrawal':
         return 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30';
+      case 'job':
+        return 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border-indigo-500/30';
       case 'task':
       case 'submission':
-      case 'job':
         return 'bg-purple-500/10 text-purple-700 dark:text-amber-300 border-purple-500/30';
       case 'broadcast':
         return 'bg-amber-500/20 text-amber-800 dark:text-amber-300 border-amber-500/50 font-black shadow-xs';
       default:
         return 'bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/30';
+    }
+  };
+
+  const getBadgeLabel = (type?: string) => {
+    switch (type) {
+      case 'broadcast':
+        return '👑 ADMIN OFFICIAL (সকলের জন্য)';
+      case 'job':
+        return '💼 নতুন জব (Find Jobs)';
+      case 'submission':
+      case 'task':
+        return 'টাস্ক আপডেট';
+      case 'deposit':
+        return 'ডিপোজিট';
+      case 'withdrawal':
+        return 'উত্তোলন';
+      case 'announcement':
+        return 'সিস্টেম আপডেট';
+      default:
+        return type || 'System';
     }
   };
 
@@ -419,7 +459,7 @@ export default function NotificationsPage() {
                         {notif.title}
                       </h3>
                       <span className={`px-2.5 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-wider border ${getBadgeColor(notif.type)}`}>
-                        {notif.type === 'broadcast' ? '👑 ADMIN OFFICIAL (সকলের জন্য)' : notif.type || 'System'}
+                        {getBadgeLabel(notif.type)}
                       </span>
                     </div>
 
@@ -432,6 +472,18 @@ export default function NotificationsPage() {
                   <p className="text-xs sm:text-sm font-semibold text-slate-600 dark:text-purple-200/90 leading-relaxed">
                     {notif.message}
                   </p>
+
+                  {notif.type === 'job' && (
+                    <div className="pt-1">
+                      <Link
+                        to={notif.url || '/jobs'}
+                        className="inline-flex items-center gap-1.5 text-xs font-black text-indigo-600 dark:text-amber-300 hover:underline"
+                      >
+                        <span>Find Jobs-এ দেখুন</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </Link>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

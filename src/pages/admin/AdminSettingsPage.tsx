@@ -1,7 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { Settings, Save, Bell, DollarSign, Percent, Gift, Megaphone, Send } from 'lucide-react';
+import { Settings, Save, Bell, DollarSign, Percent, Gift, Megaphone, Send, Trash2, Plus, Eye, EyeOff, Clock } from 'lucide-react';
 import toast from 'react-hot-toast';
+import {
+  AdminBannerNotice,
+  AdminBroadcastMessage,
+  getDeletedBroadcastIdsLocal,
+  saveDeletedBroadcastIdsLocal,
+} from '../../lib/localFallbackStore';
 
 export default function AdminSettingsPage() {
   const [siteSettings, setSiteSettings] = useState({
@@ -26,9 +32,15 @@ export default function AdminSettingsPage() {
     user_notice_enabled: false,
     user_notice_type: 'info' as 'info' | 'warning' | 'success' | 'promo',
     user_notice_text: '',
+    broadcast_title: '📢 অ্যাডমিন অফিশিয়াল ব্রডকাস্ট নোটিশ',
     broadcast_text: '',
   });
-  
+
+  const [bannerNotices, setBannerNotices] = useState<AdminBannerNotice[]>([]);
+  const [newNoticeType, setNewNoticeType] = useState<'info' | 'warning' | 'success' | 'promo'>('info');
+  const [newNoticeText, setNewNoticeText] = useState('');
+  const [broadcastHistory, setBroadcastHistory] = useState<AdminBroadcastMessage[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [broadcasting, setBroadcasting] = useState(false);
@@ -79,6 +91,66 @@ export default function AdminSettingsPage() {
 
         const mergedCtrls = controlsData || localCtrls || {};
 
+        // Migrate legacy single notice to multi-notice list if user_notices is absent
+        let loadedNotices: AdminBannerNotice[] = [];
+        if (Array.isArray(mergedCtrls.user_notices)) {
+          loadedNotices = mergedCtrls.user_notices;
+        } else if (mergedCtrls.user_notice_text && String(mergedCtrls.user_notice_text).trim()) {
+          loadedNotices = [
+            {
+              id: 'notice_legacy_1',
+              type: mergedCtrls.user_notice_type || 'info',
+              text: String(mergedCtrls.user_notice_text).trim(),
+              enabled: Boolean(mergedCtrls.user_notice_enabled),
+              created_at: mergedCtrls.updated_at || new Date().toISOString(),
+            },
+          ];
+        }
+        setBannerNotices(loadedNotices);
+
+        // Fetch broadcast history + latest_broadcast + deleted_broadcast_ids
+        let loadedBroadcasts: AdminBroadcastMessage[] = [];
+        try {
+          const { data: bcRows } = await supabase
+            .from('settings')
+            .select('key, value')
+            .in('key', ['admin_broadcasts', 'latest_broadcast', 'deleted_broadcast_ids']);
+
+          let deletedIds = new Set<string>(getDeletedBroadcastIdsLocal());
+          let latestBc: any = null;
+
+          if (Array.isArray(bcRows)) {
+            for (const row of bcRows) {
+              const parsed = typeof row.value === 'string' ? (() => { try { return JSON.parse(row.value); } catch { return null; } })() : row.value;
+              if (row.key === 'deleted_broadcast_ids' && Array.isArray(parsed)) {
+                saveDeletedBroadcastIdsLocal(parsed.map(String));
+                deletedIds = new Set(parsed.map(String));
+              } else if (row.key === 'admin_broadcasts' && Array.isArray(parsed)) {
+                loadedBroadcasts = parsed;
+              } else if (row.key === 'latest_broadcast' && parsed?.text) {
+                latestBc = parsed;
+              }
+            }
+          }
+
+          if (loadedBroadcasts.length === 0) {
+            try {
+              const localBcListStr = localStorage.getItem('iz_admin_broadcasts');
+              if (localBcListStr) {
+                const parsed = JSON.parse(localBcListStr);
+                if (Array.isArray(parsed)) loadedBroadcasts = parsed;
+              }
+            } catch {}
+          }
+
+          if (loadedBroadcasts.length === 0 && latestBc?.text && !deletedIds.has(String(latestBc.id || ''))) {
+            loadedBroadcasts = [latestBc];
+          }
+
+          loadedBroadcasts = loadedBroadcasts.filter((b) => b && b.id && !deletedIds.has(String(b.id)));
+        } catch {}
+        setBroadcastHistory(loadedBroadcasts);
+
         setSiteSettings({
           bkash_enabled: paymentData?.bkash?.enabled ?? paymentData?.bkash_enabled ?? data?.bkash_enabled ?? true,
           bkash_number: paymentData?.bkash?.number ?? paymentData?.bkash_number ?? data?.bkash_number ?? '',
@@ -101,6 +173,7 @@ export default function AdminSettingsPage() {
           user_notice_enabled: mergedCtrls.user_notice_enabled ?? false,
           user_notice_type: mergedCtrls.user_notice_type || 'info',
           user_notice_text: mergedCtrls.user_notice_text || '',
+          broadcast_title: '📢 অ্যাডমিন অফিশিয়াল ব্রডকাস্ট নোটিশ',
           broadcast_text: '',
         });
       } catch (err) {
@@ -111,6 +184,74 @@ export default function AdminSettingsPage() {
     }
     fetchSettings();
   }, []);
+
+  const persistBannerNotices = async (nextNotices: AdminBannerNotice[]) => {
+    const firstActive = nextNotices.find((n) => n.enabled && n.text.trim());
+    const controlsPayload = {
+      withdraw_fee_percent: Number(siteSettings.withdraw_fee_percent) || 0,
+      deposit_bonus_percent: Number(siteSettings.deposit_bonus_percent) || 0,
+      withdraw_bonus_percent: Number(siteSettings.withdraw_bonus_percent) || 0,
+      user_notice_enabled: Boolean(firstActive),
+      user_notice_type: firstActive?.type || 'info',
+      user_notice_text: firstActive?.text || '',
+      user_notices: nextNotices,
+      updated_at: new Date().toISOString(),
+    };
+
+    setBannerNotices(nextNotices);
+    setSiteSettings((prev) => ({
+      ...prev,
+      user_notice_enabled: controlsPayload.user_notice_enabled,
+      user_notice_type: controlsPayload.user_notice_type as any,
+      user_notice_text: controlsPayload.user_notice_text,
+    }));
+
+    localStorage.setItem('iz_platform_controls', JSON.stringify(controlsPayload));
+    window.dispatchEvent(new CustomEvent('iz_platform_controls_updated', { detail: controlsPayload }));
+
+    try {
+      await supabase
+        .from('settings')
+        .upsert(
+          {
+            key: 'platform_controls',
+            value: controlsPayload,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'key' }
+        );
+    } catch {}
+  };
+
+  const handleAddBannerNotice = async () => {
+    if (!newNoticeText.trim()) {
+      toast.error('অনুগ্রহ করে নোটিশের লেখা লিখুন।');
+      return;
+    }
+    const item: AdminBannerNotice = {
+      id: `notice_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      type: newNoticeType,
+      text: newNoticeText.trim(),
+      enabled: true,
+      created_at: new Date().toISOString(),
+    };
+    const next = [item, ...bannerNotices];
+    await persistBannerNotices(next);
+    setNewNoticeText('');
+    toast.success('নতুন নোটিশ ব্যানার সফলভাবে পাবলিশ হয়েছে!');
+  };
+
+  const handleToggleBannerNotice = async (id: string) => {
+    const next = bannerNotices.map((n) => (n.id === id ? { ...n, enabled: !n.enabled } : n));
+    await persistBannerNotices(next);
+    toast.success('নোটিশের অবস্থা আপডেট হয়েছে!');
+  };
+
+  const handleDeleteBannerNotice = async (id: string) => {
+    const next = bannerNotices.filter((n) => n.id !== id);
+    await persistBannerNotices(next);
+    toast.success('নোটিশ সফলভাবে ডিলিট করা হয়েছে!');
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -136,13 +277,15 @@ export default function AdminSettingsPage() {
         contact_support_url: siteSettings.contact_support_url,
       };
 
+      const firstActive = bannerNotices.find((n) => n.enabled && n.text.trim());
       const controlsPayload = {
         withdraw_fee_percent: Number(siteSettings.withdraw_fee_percent) || 0,
         deposit_bonus_percent: Number(siteSettings.deposit_bonus_percent) || 0,
         withdraw_bonus_percent: Number(siteSettings.withdraw_bonus_percent) || 0,
-        user_notice_enabled: Boolean(siteSettings.user_notice_enabled),
-        user_notice_type: siteSettings.user_notice_type,
-        user_notice_text: siteSettings.user_notice_text.trim(),
+        user_notice_enabled: Boolean(firstActive),
+        user_notice_type: firstActive?.type || 'info',
+        user_notice_text: firstActive?.text || '',
+        user_notices: bannerNotices,
         updated_at: new Date().toISOString(),
       };
 
@@ -196,31 +339,85 @@ export default function AdminSettingsPage() {
 
     setBroadcasting(true);
     try {
-      const broadcastData = {
+      const broadcastData: AdminBroadcastMessage = {
         id: `bc_${Date.now()}`,
+        title: siteSettings.broadcast_title.trim() || '📢 অ্যাডমিন অফিশিয়াল ব্রডকাস্ট নোটিশ',
         text: siteSettings.broadcast_text.trim(),
         created_at: new Date().toISOString(),
       };
 
-      // Store broadcast in localStorage and dispatch realtime event
+      const nextHistory = [broadcastData, ...broadcastHistory].slice(0, 50);
+      setBroadcastHistory(nextHistory);
+
+      // Store in localStorage and dispatch realtime event
       localStorage.setItem('iz_latest_broadcast', JSON.stringify(broadcastData));
+      localStorage.setItem('iz_admin_broadcasts', JSON.stringify(nextHistory));
       
       try {
-        await supabase.from('settings').upsert({
-          key: 'latest_broadcast',
-          value: broadcastData,
-          updated_at: new Date().toISOString()
-        }, { onConflict: 'key' });
+        await Promise.all([
+          supabase.from('settings').upsert({
+            key: 'latest_broadcast',
+            value: broadcastData,
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'key' }),
+          supabase.from('settings').upsert({
+            key: 'admin_broadcasts',
+            value: nextHistory,
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'key' }),
+        ]);
       } catch {}
 
       window.dispatchEvent(new CustomEvent('iz_broadcast_notification', { detail: broadcastData }));
 
-      toast.success("ইউজারদের কাছে নোটিফিকেশন সফলভাবে পাঠানো হয়েছে!");
+      toast.success("সকল ইউজারের কাছে নোটিশ/মেসেজ সফলভাবে পাঠানো হয়েছে!");
       setSiteSettings(prev => ({ ...prev, broadcast_text: '' }));
     } catch (err: any) {
       toast.error("নোটিফিকেশন পাঠাতে ব্যর্থ হয়েছে।");
     } finally {
       setBroadcasting(false);
+    }
+  };
+
+  const handleDeleteBroadcast = async (bcId: string) => {
+    try {
+      const nextHistory = broadcastHistory.filter((b) => b.id !== bcId);
+      setBroadcastHistory(nextHistory);
+
+      const deletedIds = Array.from(new Set([bcId, ...getDeletedBroadcastIdsLocal()])).slice(0, 200);
+      saveDeletedBroadcastIdsLocal(deletedIds);
+
+      const nextLatest = nextHistory[0] || null;
+      localStorage.setItem('iz_admin_broadcasts', JSON.stringify(nextHistory));
+      if (nextLatest) {
+        localStorage.setItem('iz_latest_broadcast', JSON.stringify(nextLatest));
+      } else {
+        localStorage.removeItem('iz_latest_broadcast');
+      }
+
+      window.dispatchEvent(new CustomEvent('iz_broadcast_deleted', { detail: { id: bcId, deletedIds } }));
+
+      await Promise.all([
+        supabase.from('settings').upsert({
+          key: 'admin_broadcasts',
+          value: nextHistory,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'key' }),
+        supabase.from('settings').upsert({
+          key: 'deleted_broadcast_ids',
+          value: deletedIds,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'key' }),
+        supabase.from('settings').upsert({
+          key: 'latest_broadcast',
+          value: nextLatest,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'key' }),
+      ]);
+
+      toast.success('মেসেজ/নোটিশটি ডিলিট করা হয়েছে এবং ইউজারদের কাছ থেকেও মুছে ফেলা হয়েছে!');
+    } catch {
+      toast.error('ডিলিট করতে সমস্যা হয়েছে।');
     }
   };
 
@@ -409,91 +606,193 @@ export default function AdminSettingsPage() {
             </div>
           </div>
 
-          {/* SECTION 2: GLOBAL USER ANNOUNCEMENT BANNER */}
+          {/* SECTION 2: GLOBAL USER ANNOUNCEMENT BANNERS (একাধিক নোটিশ যোগ ও ডিলিট) */}
           <div className="pt-4 border-t border-slate-100 dark:border-purple-900/40 space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2">
                 <Megaphone className="w-5 h-5 text-amber-500" />
                 <div>
-                  <h3 className="text-base font-black text-slate-900 dark:text-white">গ্লোবাল এনাউন্সমেন্ট ব্যানার (Notice Banner)</h3>
-                  <p className="text-xs font-semibold text-slate-500 dark:text-purple-300/70">ইউজারদের ড্যাশবোর্ডের উপরে স্থায়ীভাবে নোটিশ ব্যানার দেখান</p>
+                  <h3 className="text-base font-black text-slate-900 dark:text-white">গ্লোবাল এনাউন্সমেন্ট ব্যানার (Notice Banners)</h3>
+                  <p className="text-xs font-semibold text-slate-500 dark:text-purple-300/70">
+                    এক এক সময়ে আলাদা আলাদা নোটিশ যোগ করুন, হাইড/শো করুন অথবা যেকোনো সময় ডিলিট করুন
+                  </p>
                 </div>
               </div>
-
-              <label className="flex items-center cursor-pointer">
-                <div className="relative">
-                  <input 
-                    type="checkbox" 
-                    className="sr-only" 
-                    checked={siteSettings.user_notice_enabled} 
-                    onChange={(e) => setSiteSettings({ ...siteSettings, user_notice_enabled: e.target.checked })} 
-                  />
-                  <div className={`block w-10 h-6 rounded-full transition-colors ${siteSettings.user_notice_enabled ? 'bg-purple-600 dark:bg-amber-400' : 'bg-slate-200 dark:bg-purple-900/50 border border-slate-300 dark:border-purple-500/30'}`}></div>
-                  <div className={`dot absolute left-1 top-1 bg-white dark:bg-slate-950 w-4 h-4 rounded-full transition-transform ${siteSettings.user_notice_enabled ? 'transform translate-x-4' : ''}`}></div>
-                </div>
-                <span className="ml-2.5 text-xs font-black text-slate-700 dark:text-purple-200">
-                  {siteSettings.user_notice_enabled ? 'Active' : 'Hidden'}
-                </span>
-              </label>
+              <span className="text-[11px] font-black px-2.5 py-1 rounded-full bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-amber-300">
+                মোট নোটিশ: {bannerNotices.length}টি
+              </span>
             </div>
 
-            {siteSettings.user_notice_enabled && (
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 bg-slate-50 dark:bg-[#080412]/80 p-4 rounded-2xl border border-slate-200 dark:border-purple-500/20">
-                <div className="sm:col-span-1">
-                  <label className="block text-xs font-bold text-slate-700 dark:text-purple-200 mb-1">Banner Style Type</label>
-                  <select
-                    value={siteSettings.user_notice_type}
-                    onChange={(e) => setSiteSettings({ ...siteSettings, user_notice_type: e.target.value as any })}
-                    className="w-full px-3 py-2 bg-white dark:bg-[#130b2c] text-slate-900 dark:text-white border border-slate-300 dark:border-purple-500/30 rounded-xl outline-none font-bold text-xs"
-                  >
-                    <option value="info">💡 Information (Purple)</option>
-                    <option value="warning">⚠️ Warning (Amber)</option>
-                    <option value="success">🎉 Special Offer (Emerald)</option>
-                    <option value="promo">🚀 Mega Promo (Gradient)</option>
-                  </select>
-                </div>
-                <div className="sm:col-span-3">
-                  <label className="block text-xs font-bold text-slate-700 dark:text-purple-200 mb-1">Announcement Message Text</label>
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-slate-50 dark:bg-[#080412]/80 p-4 rounded-2xl border border-slate-200 dark:border-purple-500/20">
+              <div className="sm:col-span-1">
+                <label className="block text-xs font-bold text-slate-700 dark:text-purple-200 mb-1">Banner Style</label>
+                <select
+                  value={newNoticeType}
+                  onChange={(e) => setNewNoticeType(e.target.value as any)}
+                  className="w-full px-3 py-2.5 bg-white dark:bg-[#130b2c] text-slate-900 dark:text-white border border-slate-300 dark:border-purple-500/30 rounded-xl outline-none font-bold text-xs"
+                >
+                  <option value="info">💡 Information (Purple)</option>
+                  <option value="warning">⚠️ Warning (Amber)</option>
+                  <option value="success">🎉 Special Offer (Emerald)</option>
+                  <option value="promo">🚀 Mega Promo (Gradient)</option>
+                </select>
+              </div>
+              <div className="sm:col-span-3 flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-end">
+                <div className="flex-1">
+                  <label className="block text-xs font-bold text-slate-700 dark:text-purple-200 mb-1">নতুন নোটিশের লেখা</label>
                   <input
                     type="text"
-                    value={siteSettings.user_notice_text}
-                    onChange={(e) => setSiteSettings({ ...siteSettings, user_notice_text: e.target.value })}
-                    placeholder="e.g. আজকে যে কোনো বিকাশে ডিপোজিট করলে পাচ্ছেন ১০% ইনস্ট্যান্ট বোনাস! 🚀"
-                    className="w-full px-4 py-2 bg-white dark:bg-[#130b2c] text-slate-900 dark:text-white border border-slate-300 dark:border-purple-500/30 rounded-xl outline-none font-medium text-xs sm:text-sm"
+                    value={newNoticeText}
+                    onChange={(e) => setNewNoticeText(e.target.value)}
+                    placeholder="e.g. আজকে বিকাশে ডিপোজিট করলে পাচ্ছেন ১০% বোনাস! 🚀"
+                    className="w-full px-4 py-2.5 bg-white dark:bg-[#130b2c] text-slate-900 dark:text-white border border-slate-300 dark:border-purple-500/30 rounded-xl outline-none font-medium text-xs sm:text-sm"
                   />
                 </div>
+                <button
+                  type="button"
+                  onClick={handleAddBannerNotice}
+                  disabled={!newNoticeText.trim()}
+                  className="px-5 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-1.5 shrink-0 cursor-pointer disabled:opacity-50"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>নতুন নোটিশ দিন</span>
+                </button>
+              </div>
+            </div>
+
+            {bannerNotices.length > 0 && (
+              <div className="space-y-2.5">
+                {bannerNotices.map((bn) => (
+                  <div
+                    key={bn.id}
+                    className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-2xl border transition-all ${
+                      bn.enabled
+                        ? 'bg-white dark:bg-[#130b2c] border-purple-200 dark:border-purple-500/30 shadow-xs'
+                        : 'bg-slate-50 dark:bg-[#080412]/50 border-slate-200 dark:border-purple-900/30 opacity-65'
+                    }`}
+                  >
+                    <div className="space-y-1 min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-amber-300">
+                          {bn.type}
+                        </span>
+                        <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${bn.enabled ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400'}`}>
+                          {bn.enabled ? 'Visible to Users' : 'Hidden'}
+                        </span>
+                        <span className="text-[10px] text-slate-400 dark:text-purple-300/60 flex items-center gap-1 font-mono">
+                          <Clock className="w-3 h-3" />
+                          {new Date(bn.created_at).toLocaleString('bn-BD')}
+                        </span>
+                      </div>
+                      <p className="text-xs sm:text-sm font-bold text-slate-800 dark:text-purple-100 break-words">
+                        {bn.text}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleBannerNotice(bn.id)}
+                        className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-purple-900/40 dark:hover:bg-purple-900/60 text-slate-700 dark:text-purple-200 text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        {bn.enabled ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        <span>{bn.enabled ? 'Hide' : 'Show'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteBannerNotice(bn.id)}
+                        className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/50 dark:hover:bg-rose-900/60 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30 text-xs font-black flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>ডিলিট</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
 
-          {/* SECTION 3: INSTANT BROADCAST PUSH NOTIFICATION */}
+          {/* SECTION 3: INSTANT BROADCAST PUSH NOTIFICATION (একাধিক মেসেজ পাঠানো ও ডিলিট) */}
           <div className="pt-4 border-t border-slate-100 dark:border-purple-900/40 space-y-3">
-            <div className="flex items-center gap-2">
-              <Bell className="w-5 h-5 text-purple-600 dark:text-amber-400" />
-              <div>
-                <h3 className="text-base font-black text-slate-900 dark:text-white">ইনস্ট্যান্ট পুশ নোটিফিকেশন সেন্ড করুন (Instant Broadcast)</h3>
-                <p className="text-xs font-semibold text-slate-500 dark:text-purple-300/70">এক ক্লিকে সকল একটিভ ইউজারদের পপ-আপ নোটিফিকেশন জানান</p>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <Bell className="w-5 h-5 text-purple-600 dark:text-amber-400" />
+                <div>
+                  <h3 className="text-base font-black text-slate-900 dark:text-white">ইনস্ট্যান্ট পুশ নোটিশ ও মেসেজ সেন্ড করুন (Broadcast Notices)</h3>
+                  <p className="text-xs font-semibold text-slate-500 dark:text-purple-300/70">
+                    এক এক সময়ে নতুন নতুন নোটিশ/মেসেজ সকল ইউজারের ফোনে ও নোটিফিকেশনে পাঠান এবং চাইলে ডিলিট করুন
+                  </p>
+                </div>
+              </div>
+              {broadcastHistory.length > 0 && (
+                <span className="text-[11px] font-black px-2.5 py-1 rounded-full bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-amber-300">
+                  পাঠানো মেসেজ: {broadcastHistory.length}টি
+                </span>
+              )}
+            </div>
+
+            <div className="space-y-2.5 bg-slate-50 dark:bg-[#080412]/80 p-4 rounded-2xl border border-slate-200 dark:border-purple-500/20">
+              <input
+                type="text"
+                value={siteSettings.broadcast_title}
+                onChange={(e) => setSiteSettings({ ...siteSettings, broadcast_title: e.target.value })}
+                placeholder="নোটিশের শিরোনাম (যেমন: 📢 জরুরি ঘোষণা / নতুন অফার)"
+                className="w-full px-4 py-2 bg-white dark:bg-[#130b2c] text-slate-900 dark:text-white border border-slate-300 dark:border-purple-500/30 rounded-xl outline-none text-xs font-bold"
+              />
+              <div className="flex flex-col sm:flex-row gap-3">
+                <input
+                  type="text"
+                  value={siteSettings.broadcast_text}
+                  onChange={(e) => setSiteSettings({ ...siteSettings, broadcast_text: e.target.value })}
+                  placeholder="ইউজারদের উদ্দেশ্যে নোটিশ বা মেসেজ লিখুন..."
+                  className="flex-1 px-4 py-2.5 bg-white dark:bg-[#130b2c] text-slate-900 dark:text-white border border-slate-300 dark:border-purple-500/30 rounded-xl outline-none text-xs sm:text-sm font-medium"
+                />
+                <button
+                  type="button"
+                  onClick={handleSendBroadcast}
+                  disabled={broadcasting || !siteSettings.broadcast_text.trim()}
+                  className="px-6 py-2.5 bg-purple-600 hover:bg-purple-700 dark:bg-amber-400 dark:hover:bg-amber-300 text-white dark:text-slate-950 font-black text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer disabled:opacity-50"
+                >
+                  <Send className="w-4 h-4" />
+                  {broadcasting ? 'Sending...' : 'Send Broadcast Notification'}
+                </button>
               </div>
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-3">
-              <input
-                type="text"
-                value={siteSettings.broadcast_text}
-                onChange={(e) => setSiteSettings({ ...siteSettings, broadcast_text: e.target.value })}
-                placeholder="ইউজারদের উদ্দেশ্যে নোটিফিকেশনের বার্তা লিখুন (e.g. বিকাশে নতুন নোটিশ পোস্ট করা হয়েছে)..."
-                className="flex-1 px-4 py-2.5 bg-slate-50 dark:bg-[#080412]/80 text-slate-900 dark:text-white border border-slate-300 dark:border-purple-500/30 rounded-xl outline-none text-xs sm:text-sm font-medium"
-              />
-              <button
-                type="button"
-                onClick={handleSendBroadcast}
-                disabled={broadcasting || !siteSettings.broadcast_text.trim()}
-                className="px-6 py-2.5 bg-purple-600 hover:bg-purple-700 dark:bg-amber-400 dark:hover:bg-amber-300 text-white dark:text-slate-950 font-black text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 shrink-0 disabled:opacity-50"
-              >
-                <Send className="w-4 h-4" />
-                {broadcasting ? 'Sending...' : 'Send Broadcast Notification'}
-              </button>
-            </div>
+            {broadcastHistory.length > 0 && (
+              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                {broadcastHistory.map((bc) => (
+                  <div
+                    key={bc.id}
+                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3.5 rounded-2xl bg-white dark:bg-[#130b2c] border border-slate-200 dark:border-purple-500/20"
+                  >
+                    <div className="space-y-0.5 min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-black text-purple-700 dark:text-amber-300">
+                          {bc.title || '📢 অ্যাডমিন অফিশিয়াল ব্রডকাস্ট নোটিশ'}
+                        </span>
+                        <span className="text-[10px] text-slate-400 dark:text-purple-300/60 font-mono flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          {new Date(bc.created_at).toLocaleString('bn-BD')}
+                        </span>
+                      </div>
+                      <p className="text-xs font-semibold text-slate-700 dark:text-purple-100 break-words">
+                        {bc.text}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteBroadcast(bc.id)}
+                      className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/50 dark:hover:bg-rose-900/60 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30 text-xs font-black flex items-center gap-1 shrink-0 self-end sm:self-center cursor-pointer transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>ডিলিট</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 

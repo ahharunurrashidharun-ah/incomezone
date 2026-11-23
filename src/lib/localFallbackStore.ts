@@ -846,17 +846,45 @@ export const isUserBlocked = (userIdOrEmail: string): boolean => {
   }
 };
 
+export type UserNotificationType =
+  | 'broadcast'
+  | 'deposit'
+  | 'withdrawal'
+  | 'submission'
+  | 'announcement'
+  | 'job'
+  | 'task'
+  | 'general';
+
 export interface UserNotificationItem {
   id: string;
   userId?: string;
   title: string;
   message: string;
-  type: 'broadcast' | 'deposit' | 'withdrawal' | 'submission' | 'announcement';
+  type: UserNotificationType;
+  url?: string;
   read: boolean;
   created_at: string;
 }
 
 const NOTIF_ICON_PATH = '/assets/aistudio/1795356168824_9e1cf2d3.jpg';
+
+const resolveNotificationUrl = (type?: string, customUrl?: string): string => {
+  if (customUrl) return customUrl;
+  switch (type) {
+    case 'job':
+      return '/jobs';
+    case 'deposit':
+      return '/deposit';
+    case 'withdrawal':
+      return '/withdraw';
+    case 'submission':
+    case 'task':
+      return '/submitted-jobs';
+    default:
+      return '/notifications';
+  }
+};
 
 const getActiveSessionUserId = (): string | null => {
   if (typeof window === 'undefined') return null;
@@ -892,6 +920,52 @@ export const getLocalNotifications = (userId: string): UserNotificationItem[] =>
   }
 };
 
+const getNativeNotifiedIds = (userId: string): Set<string> => {
+  try {
+    const raw = localStorage.getItem(`iz_native_notified_ids_${userId}`);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.map(String)) : new Set();
+  } catch {
+    return new Set();
+  }
+};
+
+export const markNativeNotified = (userId: string, ids: string[]) => {
+  if (!userId || !ids.length) return;
+  try {
+    const raw = localStorage.getItem(`iz_native_notified_ids_${userId}`);
+    const existing: string[] = raw ? JSON.parse(raw) : [];
+    const seen = new Set(Array.isArray(existing) ? existing.map(String) : []);
+    const merged = Array.from(new Set([...ids.map(String), ...seen])).slice(0, 300);
+    localStorage.setItem(`iz_native_notified_ids_${userId}`, JSON.stringify(merged));
+  } catch {}
+};
+
+const waitForServiceWorkerActive = async (reg: ServiceWorkerRegistration, timeoutMs = 4500): Promise<boolean> => {
+  if (reg.active) return true;
+  const pendingWorker = reg.installing || reg.waiting;
+  if (!pendingWorker) return Boolean(reg.active);
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const done = (val: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(val);
+    };
+    const timer = setTimeout(() => done(Boolean(reg.active)), timeoutMs);
+    pendingWorker.addEventListener('statechange', () => {
+      if (pendingWorker.state === 'activated' || reg.active) {
+        done(true);
+      } else if (pendingWorker.state === 'redundant') {
+        done(Boolean(reg.active));
+      }
+    });
+  });
+};
+
 export const registerNotificationServiceWorker = async (): Promise<ServiceWorkerRegistration | null> => {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return null;
   try {
@@ -899,17 +973,25 @@ export const registerNotificationServiceWorker = async (): Promise<ServiceWorker
     if (!registration) {
       registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
     }
-    const readyPromise = navigator.serviceWorker.ready;
-    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000));
-    const readyReg = (await Promise.race([readyPromise, timeoutPromise])) as ServiceWorkerRegistration | null;
-    return readyReg || registration;
+    if (!registration.active) {
+      await Promise.race([
+        navigator.serviceWorker.ready.then(() => true),
+        waitForServiceWorkerActive(registration, 4500),
+      ]);
+      const refreshed = await navigator.serviceWorker.getRegistration('/');
+      if (refreshed) registration = refreshed;
+    }
+    return registration;
   } catch (err) {
     console.warn('Service worker registration failed:', err);
     return null;
   }
 };
 
-export const showDeviceNotification = async (
+// Serialize OS notifications with a tiny delay so Android Chrome does not coalesce or drop rapid bursts
+let deviceNotifQueue: Promise<void> = Promise.resolve();
+
+const showDeviceNotificationInternal = async (
   title: string,
   message: string,
   options?: { tag?: string; url?: string }
@@ -922,6 +1004,7 @@ export const showDeviceNotification = async (
   }
 
   const tag = options?.tag || `iz_${Date.now()}`;
+  const targetUrl = options?.url || '/notifications';
   const notifOptions: NotificationOptions & { renotify?: boolean; vibrate?: number[] } = {
     body: message,
     icon: NOTIF_ICON_PATH,
@@ -929,21 +1012,31 @@ export const showDeviceNotification = async (
     tag,
     renotify: true,
     vibrate: [200, 100, 200],
-    data: { url: options?.url || '/notifications' },
+    data: { url: targetUrl },
   };
 
-  // 1. Mobile Chrome / Android / modern browsers REQUIRE ServiceWorkerRegistration.showNotification
+  // 1. Mobile Chrome / Android / modern browsers REQUIRE active ServiceWorkerRegistration.showNotification
   try {
     const reg = await registerNotificationServiceWorker();
-    if (reg && typeof reg.showNotification === 'function') {
+    if (reg?.active && typeof reg.showNotification === 'function') {
       await reg.showNotification(title, notifOptions);
+      return { shown: true, method: 'sw' };
+    }
+    if (navigator.serviceWorker?.controller) {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'SHOW_NOTIFICATION',
+        title,
+        body: message,
+        tag,
+        url: targetUrl,
+      });
       return { shown: true, method: 'sw' };
     }
   } catch (swErr) {
     console.warn('ServiceWorker showNotification failed, checking fallback:', swErr);
   }
 
-  // 2. Fallback to window Notification constructor ONLY on desktop browsers where supported
+  // 2. Fallback to window Notification constructor on desktop browsers where supported
   try {
     const nativeNotif = new Notification(title, {
       body: message,
@@ -951,7 +1044,12 @@ export const showDeviceNotification = async (
       tag,
     });
     nativeNotif.onclick = () => {
-      try { window.focus(); } catch {}
+      try {
+        window.focus();
+        if (targetUrl && window.location.pathname !== targetUrl) {
+          window.location.href = targetUrl;
+        }
+      } catch {}
     };
     return { shown: true, method: 'window' };
   } catch (winErr: any) {
@@ -963,6 +1061,20 @@ export const showDeviceNotification = async (
         : (winErr?.message || 'ডিভাইসে নোটিফিকেশন দেখানো যায়নি।'),
     };
   }
+};
+
+export const showDeviceNotification = (
+  title: string,
+  message: string,
+  options?: { tag?: string; url?: string }
+): Promise<{ shown: boolean; method?: 'sw' | 'window'; reason?: string }> => {
+  return new Promise((resolve) => {
+    deviceNotifQueue = deviceNotifQueue.then(async () => {
+      const res = await showDeviceNotificationInternal(title, message, options);
+      resolve(res);
+      await new Promise((r) => setTimeout(r, 180));
+    });
+  });
 };
 
 export const getNotificationPermissionState = (): NotificationPermission | 'unsupported' => {
@@ -989,40 +1101,165 @@ export const requestNativeNotificationPermission = async (): Promise<Notificatio
   }
 };
 
-export const pushRemoteUserNotification = async (
+const dispatchDeviceNotificationForItem = async (
+  userId: string,
+  item: UserNotificationItem,
+  fallbackUrl?: string
+): Promise<boolean> => {
+  if (typeof window === 'undefined' || getNotificationPermissionState() !== 'granted') return false;
+  const activeUid = getActiveSessionUserId();
+  if (activeUid && activeUid !== userId) return false;
+
+  const alreadyNotified = getNativeNotifiedIds(userId);
+  if (alreadyNotified.has(item.id)) return false;
+
+  const url = resolveNotificationUrl(item.type, item.url || fallbackUrl);
+  const res = await showDeviceNotification(item.title, item.message, {
+    tag: item.id,
+    url,
+  });
+
+  if (res.shown) {
+    markNativeNotified(userId, [item.id]);
+    return true;
+  }
+  return false;
+};
+
+export const flushPendingDeviceNotifications = async (userId: string): Promise<void> => {
+  if (!userId || getNotificationPermissionState() !== 'granted') return;
+  const activeUid = getActiveSessionUserId();
+  if (activeUid && activeUid !== userId) return;
+
+  try {
+    const list = getLocalNotifications(userId);
+    if (!list.length) return;
+
+    const notifiedSet = getNativeNotifiedIds(userId);
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+
+    // Send oldest unseen first so the newest notification stays at the top of the phone tray
+    const pending = list
+      .filter((n) => {
+        if (!n || !n.id || n.read || notifiedSet.has(n.id)) return false;
+        const ts = n.created_at ? new Date(n.created_at).getTime() : Date.now();
+        return Number.isNaN(ts) || ts >= cutoff;
+      })
+      .reverse();
+
+    for (const item of pending) {
+      await dispatchDeviceNotificationForItem(userId, item);
+    }
+  } catch {}
+};
+
+// Serialize remote mailbox writes per userId so simultaneous pushes never overwrite each other
+const remoteNotifPushQueue = new Map<string, Promise<void>>();
+
+export const pushRemoteUserNotification = (
   userId: string,
   item: UserNotificationItem
 ): Promise<void> => {
-  if (!userId || !item?.id) return;
+  if (!userId || !item?.id) return Promise.resolve();
+
+  const prev = remoteNotifPushQueue.get(userId) || Promise.resolve();
+  const next = prev
+    .catch(() => {})
+    .then(async () => {
+      try {
+        const settingsKey = `user_notifs_${userId}`;
+        const { data } = await supabase
+          .from('settings')
+          .select('value')
+          .eq('key', settingsKey)
+          .maybeSingle();
+
+        let existing: UserNotificationItem[] = [];
+        if (data?.value) {
+          const parsed = typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
+          if (Array.isArray(parsed)) existing = parsed;
+        }
+
+        if (existing.some((n) => n.id === item.id)) return;
+        const merged = [item, ...existing].slice(0, 50);
+
+        await supabase
+          .from('settings')
+          .upsert(
+            {
+              key: settingsKey,
+              value: merged,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'key' }
+          );
+      } catch {
+        // Non-blocking best-effort cross-device sync
+      }
+    });
+
+  remoteNotifPushQueue.set(userId, next);
+  return next;
+};
+
+const getClearedNotifIds = (userId: string): Set<string> => {
   try {
-    const settingsKey = `user_notifs_${userId}`;
-    const { data } = await supabase
-      .from('settings')
-      .select('value')
-      .eq('key', settingsKey)
-      .maybeSingle();
-
-    let existing: UserNotificationItem[] = [];
-    if (data?.value) {
-      const parsed = typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
-      if (Array.isArray(parsed)) existing = parsed;
-    }
-
-    if (existing.some((n) => n.id === item.id)) return;
-    const merged = [item, ...existing].slice(0, 30);
-
-    await supabase
-      .from('settings')
-      .upsert(
-        {
-          key: settingsKey,
-          value: merged,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'key' }
-      );
+    const raw = localStorage.getItem(`iz_cleared_notif_ids_${userId}`);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.map(String)) : new Set();
   } catch {
-    // Non-blocking best-effort cross-device sync
+    return new Set();
+  }
+};
+
+export interface AdminBannerNotice {
+  id: string;
+  type: 'info' | 'warning' | 'success' | 'promo';
+  text: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface AdminBroadcastMessage {
+  id: string;
+  title?: string;
+  text: string;
+  created_at: string;
+}
+
+export const getDeletedBroadcastIdsLocal = (): string[] => {
+  try {
+    const raw = localStorage.getItem('iz_deleted_broadcast_ids');
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+};
+
+export const saveDeletedBroadcastIdsLocal = (ids: string[]) => {
+  try {
+    const clean = Array.from(new Set(ids.map(String))).slice(0, 200);
+    localStorage.setItem('iz_deleted_broadcast_ids', JSON.stringify(clean));
+  } catch {}
+};
+
+export const removeUserNotificationsByIds = (userId: string, idsToRemove: string[]): boolean => {
+  if (!userId || !idsToRemove.length) return false;
+  try {
+    const removeSet = new Set(idsToRemove.map(String));
+    const list = getLocalNotifications(userId);
+    const filtered = list.filter((n) => !removeSet.has(n.id));
+    if (filtered.length !== list.length) {
+      localStorage.setItem(`iz_user_notifications_${userId}`, JSON.stringify(filtered));
+      window.dispatchEvent(new CustomEvent('iz_user_notifications_updated', { detail: { userId } }));
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
   }
 };
 
@@ -1030,40 +1267,144 @@ export const syncRemoteUserNotifications = async (userId: string): Promise<void>
   if (!userId) return;
   try {
     const settingsKey = `user_notifs_${userId}`;
-    const { data, error } = await supabase
+    const deletedUserKey = `user_deleted_notifs_${userId}`;
+    const { data: rows, error } = await supabase
       .from('settings')
-      .select('value')
-      .eq('key', settingsKey)
-      .maybeSingle();
+      .select('key, value')
+      .in('key', [settingsKey, deletedUserKey, 'deleted_broadcast_ids']);
 
-    if (error || !data?.value) return;
-    const remoteList: UserNotificationItem[] =
-      typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
-    if (!Array.isArray(remoteList) || remoteList.length === 0) return;
+    let remoteList: UserNotificationItem[] = [];
+    const remoteDeletedIds = new Set<string>(getDeletedBroadcastIdsLocal());
 
-    const localList = getLocalNotifications(userId);
-    const localIds = new Set(localList.map((n) => n.id));
-    const newItems = remoteList.filter((item) => item && item.id && !localIds.has(item.id));
-    if (newItems.length === 0) return;
-
-    const merged = [...newItems, ...localList]
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-      .slice(0, 100);
-
-    localStorage.setItem(`iz_user_notifications_${userId}`, JSON.stringify(merged));
-    window.dispatchEvent(new CustomEvent('iz_user_notifications_updated', { detail: { userId } }));
-
-    // Trigger native OS notification on the recipient's phone for fresh unseen notifications (last 24h)
-    const activeUid = getActiveSessionUserId();
-    if (!activeUid || activeUid === userId) {
-      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-      const freshUnread = newItems
-        .filter((n) => !n.read && (!n.created_at || new Date(n.created_at).getTime() >= cutoff))
-        .slice(0, 3);
-      for (const n of freshUnread) {
-        void showDeviceNotification(n.title, n.message, { tag: n.id });
+    if (!error && Array.isArray(rows)) {
+      for (const row of rows) {
+        const parsed = typeof row.value === 'string' ? (() => { try { return JSON.parse(row.value); } catch { return null; } })() : row.value;
+        if (row.key === settingsKey && Array.isArray(parsed)) {
+          remoteList = parsed;
+        } else if (row.key === deletedUserKey && Array.isArray(parsed)) {
+          parsed.forEach((id: any) => remoteDeletedIds.add(String(id)));
+        } else if (row.key === 'deleted_broadcast_ids' && Array.isArray(parsed)) {
+          const bcDeleted = parsed.map(String);
+          saveDeletedBroadcastIdsLocal(bcDeleted);
+          bcDeleted.forEach((id: string) => {
+            remoteDeletedIds.add(id);
+            if (!id.startsWith('bc_')) remoteDeletedIds.add(`bc_${id}`);
+          });
+        }
       }
     }
+
+    if (remoteDeletedIds.size > 0) {
+      removeUserNotificationsByIds(userId, Array.from(remoteDeletedIds));
+    }
+
+    if (remoteList.length > 0) {
+      const localList = getLocalNotifications(userId);
+      const localIds = new Set(localList.map((n) => n.id));
+      const clearedIds = getClearedNotifIds(userId);
+      const newItems = remoteList.filter(
+        (item) =>
+          item &&
+          item.id &&
+          !localIds.has(item.id) &&
+          !clearedIds.has(item.id) &&
+          !remoteDeletedIds.has(item.id)
+      );
+
+      if (newItems.length > 0) {
+        const merged = [...newItems, ...localList]
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+          .slice(0, 100);
+
+        localStorage.setItem(`iz_user_notifications_${userId}`, JSON.stringify(merged));
+        window.dispatchEvent(new CustomEvent('iz_user_notifications_updated', { detail: { userId } }));
+      }
+    }
+
+    // Ensure every fresh unread website notification reaches the phone OS tray
+    await flushPendingDeviceNotifications(userId);
+  } catch {}
+};
+
+export const fetchRemoteUserNotifications = async (userId: string): Promise<UserNotificationItem[]> => {
+  if (!userId) return [];
+  const local = getLocalNotifications(userId);
+  try {
+    const { data } = await supabase
+      .from('settings')
+      .select('value')
+      .eq('key', `user_notifs_${userId}`)
+      .maybeSingle();
+
+    const parsed = data?.value
+      ? (typeof data.value === 'string' ? JSON.parse(data.value) : data.value)
+      : [];
+    const remote: UserNotificationItem[] = Array.isArray(parsed) ? parsed : [];
+    const map = new Map<string, UserNotificationItem>();
+    [...remote, ...local].forEach((item) => {
+      if (item && item.id && !map.has(item.id)) {
+        map.set(item.id, item);
+      }
+    });
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+  } catch {
+    return local;
+  }
+};
+
+export const deleteUserNotificationEverywhere = async (userId: string, notifId: string): Promise<void> => {
+  if (!userId || !notifId) return;
+
+  // 1. Remove from local cache on current device
+  removeUserNotificationsByIds(userId, [notifId]);
+
+  // 2. Remove from remote mailbox & record deletion tombstone so user's client strips it too
+  try {
+    const settingsKey = `user_notifs_${userId}`;
+    const deletedUserKey = `user_deleted_notifs_${userId}`;
+
+    const { data: rows } = await supabase
+      .from('settings')
+      .select('key, value')
+      .in('key', [settingsKey, deletedUserKey]);
+
+    let existingList: UserNotificationItem[] = [];
+    let existingDeleted: string[] = [];
+
+    if (Array.isArray(rows)) {
+      for (const row of rows) {
+        const parsed = typeof row.value === 'string' ? (() => { try { return JSON.parse(row.value); } catch { return null; } })() : row.value;
+        if (row.key === settingsKey && Array.isArray(parsed)) {
+          existingList = parsed;
+        } else if (row.key === deletedUserKey && Array.isArray(parsed)) {
+          existingDeleted = parsed.map(String);
+        }
+      }
+    }
+
+    const updatedList = existingList.filter((n) => n.id !== notifId);
+    const updatedDeleted = Array.from(new Set([notifId, ...existingDeleted])).slice(0, 200);
+
+    await Promise.all([
+      supabase.from('settings').upsert(
+        {
+          key: settingsKey,
+          value: updatedList,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      ),
+      supabase.from('settings').upsert(
+        {
+          key: deletedUserKey,
+          value: updatedDeleted,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      ),
+    ]);
   } catch {}
 };
 
@@ -1072,20 +1413,30 @@ export const saveLocalNotification = (
   notif: {
     title: string;
     message: string;
-    type: 'broadcast' | 'deposit' | 'withdrawal' | 'submission' | 'announcement';
+    type: UserNotificationType;
     id?: string;
+    url?: string;
     created_at?: string;
     read?: boolean;
   },
-  options?: { skipRemoteSync?: boolean; skipNative?: boolean }
+  options?: { skipRemoteSync?: boolean; skipNative?: boolean; markNativeDone?: boolean }
 ) => {
   try {
     const list = getLocalNotifications(userId);
     const itemId = notif.id || `notif_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-    // Deduplicate: do not store or re-fire OS notification for an already-recorded ID
-    if (list.some((existing) => existing.id === itemId)) {
-      return list.find((existing) => existing.id === itemId);
+    const deletedBcIds = new Set(getDeletedBroadcastIdsLocal());
+    if (deletedBcIds.has(itemId)) {
+      return undefined;
+    }
+
+    // Deduplicate: do not store duplicate IDs; if pending OS push exists for active user, flush safely
+    const existing = list.find((item) => item.id === itemId);
+    if (existing) {
+      if (!options?.skipNative && !existing.read) {
+        void dispatchDeviceNotificationForItem(userId, existing, notif.url);
+      }
+      return existing;
     }
 
     const item: UserNotificationItem = {
@@ -1094,6 +1445,7 @@ export const saveLocalNotification = (
       title: notif.title,
       message: notif.message,
       type: notif.type,
+      url: resolveNotificationUrl(notif.type, notif.url),
       read: notif.read ?? false,
       created_at: notif.created_at || new Date().toISOString(),
     };
@@ -1101,12 +1453,16 @@ export const saveLocalNotification = (
     localStorage.setItem(`iz_user_notifications_${userId}`, JSON.stringify(updatedList));
     window.dispatchEvent(new CustomEvent('iz_user_notifications_updated', { detail: { userId } }));
 
+    if (options?.markNativeDone) {
+      markNativeNotified(userId, [item.id]);
+    }
+
     const activeUid = getActiveSessionUserId();
     const isTargetCurrentDeviceUser = !activeUid || activeUid === userId;
 
-    // Only pop native notification on THIS device if the recipient is the logged-in user here
+    // Pop native OS notification on THIS device when the recipient is the logged-in user
     if (!options?.skipNative && isTargetCurrentDeviceUser) {
-      void showDeviceNotification(notif.title, notif.message, { tag: item.id });
+      void dispatchDeviceNotificationForItem(userId, item, notif.url);
     }
 
     // Persist to Supabase remote mailbox so notifications arrive on the user's phone even from Admin/Employer devices
@@ -1123,8 +1479,24 @@ export const markNotificationsAsRead = (userId: string) => {
     const list = getLocalNotifications(userId);
     const updated = list.map((n) => ({ ...n, read: true }));
     localStorage.setItem(`iz_user_notifications_${userId}`, JSON.stringify(updated));
+    markNativeNotified(userId, list.map((n) => n.id).filter(Boolean));
     window.dispatchEvent(new CustomEvent('iz_user_notifications_updated', { detail: { userId } }));
   } catch {}
 };
+
+export const clearLocalNotifications = (userId: string) => {
+  try {
+    const list = getLocalNotifications(userId);
+    const existingCleared = getClearedNotifIds(userId);
+    const nextCleared = Array.from(
+      new Set([...list.map((n) => n.id).filter(Boolean), ...Array.from(existingCleared)])
+    ).slice(0, 300);
+    localStorage.setItem(`iz_cleared_notif_ids_${userId}`, JSON.stringify(nextCleared));
+    markNativeNotified(userId, list.map((n) => n.id).filter(Boolean));
+    localStorage.removeItem(`iz_user_notifications_${userId}`);
+    window.dispatchEvent(new CustomEvent('iz_user_notifications_updated', { detail: { userId } }));
+  } catch {}
+};
+
 
 

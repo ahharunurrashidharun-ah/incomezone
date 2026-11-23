@@ -271,9 +271,11 @@ export async function postJob(jobData: JobData): Promise<string> {
 
     // Save in-app notification for employer
     saveLocalNotification(ownerId, {
+      id: `job_${finalJobId}_pending`,
       title: 'নতুন জব জমা হয়েছে! ⏳',
       message: `আপনার নতুন জব "${jobData.title}" সফলভাবে পর্যালোচনার জন্য জমা হয়েছে। অ্যাডমিন অনুমোদন দিলে এটি সরাসরি লাইভ হবে।`,
       type: 'announcement',
+      url: '/my-jobs',
     });
 
     // Queue email alert to admin
@@ -586,6 +588,7 @@ export async function submitJob(subData: SubmissionData): Promise<string> {
       title: 'টাস্ক সাবমিশন সফল হয়েছে! ⏳',
       message: `আপনার জব "${jobTitle}"-এর কাজের প্রমাণপত্র সফলভাবে জমা হয়েছে। নিয়োগকর্তা যাচাই করে অনুমোদন দিলে ব্যালেন্স জমা হবে।`,
       type: 'submission',
+      url: '/submitted-jobs',
     });
 
     // 6. Save in-app notification for employer / job owner (only if different from worker)
@@ -595,6 +598,7 @@ export async function submitJob(subData: SubmissionData): Promise<string> {
         title: 'নতুন টাস্ক সাবমিশন! 📋',
         message: `আপনার জব "${jobTitle}"-এ একজন কর্মী কাজের প্রমাণপত্র জমা দিয়েছেন। My Jobs থেকে পর্যালোচনা করুন।`,
         type: 'submission',
+        url: '/my-jobs',
       });
     }
 
@@ -633,16 +637,20 @@ export async function submitJob(subData: SubmissionData): Promise<string> {
       const jobOwnerId = localJob?.owner_id || localJob?.employer_id;
 
       saveLocalNotification(subData.workerId, {
+        id: `sub_${newSub.id}_submitted`,
         title: 'টাস্ক সাবমিশন সফল হয়েছে! ⏳',
         message: `আপনার জব "${jobTitle}"-এর কাজের প্রমাণপত্র সফলভাবে জমা হয়েছে। নিয়োগকর্তা যাচাই করে অনুমোদন দিলে ব্যালেন্স জমা হবে।`,
         type: 'submission',
+        url: '/submitted-jobs',
       });
 
       if (jobOwnerId && jobOwnerId !== subData.workerId) {
         saveLocalNotification(jobOwnerId, {
+          id: `emp_sub_${newSub.id}`,
           title: 'নতুন টাস্ক সাবমিশন! 📋',
           message: `আপনার জব "${jobTitle}"-এ একজন কর্মী কাজের প্রমাণপত্র জমা দিয়েছেন। My Jobs থেকে পর্যালোচনা করুন।`,
           type: 'submission',
+          url: '/my-jobs',
         });
       }
 
@@ -872,6 +880,7 @@ export async function approveSubmission(submissionId: string, jobId: string, wor
     title: 'টাস্ক অ্যাপ্রুভড! 🏆',
     message: `আপনার সাবমিট করা জবের কাজটির প্রমাণপত্র সফলভাবে অ্যাপ্রুভ করা হয়েছে এবং $${reward.toFixed(2)} (৳${Math.round(reward * 100)}) আর্নিং ব্যালেন্স ওয়ালেটে জমা হয়েছে।`,
     type: 'submission',
+    url: '/submitted-jobs',
   });
 
   setTimeout(() => {
@@ -982,6 +991,7 @@ export async function rejectSubmission(submissionId: string, jobId: string, reas
         title: 'টাস্ক রিজেক্টেড ⚠️',
         message: `আপনার সাবমিট করা কাজটির প্রমাণপত্র গ্রহণযোগ্য হয়নি। ${reason ? `কারণ: ${reason}` : ''}`,
         type: 'submission',
+        url: '/submitted-jobs',
       });
     }
 
@@ -1024,14 +1034,54 @@ export async function rejectSubmission(submissionId: string, jobId: string, reas
   }
 }
 
+async function publishLiveJobAlert(job: {
+  id: string;
+  title?: string;
+  pricePerTask?: number;
+  totalSlots?: number;
+  category?: string;
+  ownerId?: string;
+}): Promise<void> {
+  const signal = {
+    id: job.id,
+    title: job.title || 'New Micro-Job',
+    pricePerTask: Number(job.pricePerTask || 0),
+    totalSlots: Number(job.totalSlots || 0),
+    category: job.category || 'Micro-Job',
+    ownerId: job.ownerId || null,
+    activatedAt: new Date().toISOString(),
+  };
+
+  try {
+    localStorage.setItem('iz_latest_live_job', JSON.stringify(signal));
+  } catch {}
+
+  try {
+    window.dispatchEvent(new CustomEvent('iz_job_went_live', { detail: signal }));
+  } catch {}
+
+  try {
+    await supabase
+      .from('settings')
+      .upsert(
+        {
+          key: 'latest_live_job',
+          value: signal,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+  } catch {}
+}
+
 /**
- * Admin approves a newly posted job -> sets status to 'active'.
+ * Admin approves a newly posted job -> sets status to 'active' and broadcasts to all users.
  */
 export async function adminApproveJob(jobId: string): Promise<void> {
   try {
     const { data: job, error: fetchErr } = await supabase
       .from('jobs')
-      .select('owner_id, employer_id, title')
+      .select('owner_id, employer_id, title, price_per_task, total_slots, category')
       .eq('id', jobId)
       .maybeSingle();
 
@@ -1039,11 +1089,21 @@ export async function adminApproveJob(jobId: string): Promise<void> {
       const localJob = updateLocalJob(jobId, { status: 'active' });
       if (localJob?.owner_id) {
         saveLocalNotification(localJob.owner_id, {
+          id: `job_${jobId}_active`,
           title: 'জব ক্যাম্পেইন লাইভ! 🚀',
           message: `আপনার পোস্ট করা নতুন মিশন "${localJob.title || 'Job'}" অ্যাডমিন কর্তৃক অনুমোদিত হয়েছে এবং সরাসরি লাইভ করা হয়েছে।`,
           type: 'announcement',
+          url: '/my-jobs',
         });
       }
+      await publishLiveJobAlert({
+        id: jobId,
+        title: localJob?.title,
+        pricePerTask: localJob?.price_per_task,
+        totalSlots: localJob?.total_slots,
+        category: localJob?.category,
+        ownerId: localJob?.owner_id,
+      });
       window.dispatchEvent(new CustomEvent('iz_jobs_updated'));
       return;
     }
@@ -1061,11 +1121,21 @@ export async function adminApproveJob(jobId: string): Promise<void> {
       const localJob = updateLocalJob(jobId, { status: 'active' });
       if (localJob?.owner_id) {
         saveLocalNotification(localJob.owner_id, {
+          id: `job_${jobId}_active`,
           title: 'জব ক্যাম্পেইন লাইভ! 🚀',
           message: `আপনার পোস্ট করা নতুন মিশন "${localJob.title || 'Job'}" অ্যাডমিন কর্তৃক অনুমোদিত হয়েছে এবং সরাসরি লাইভ করা হয়েছে।`,
           type: 'announcement',
+          url: '/my-jobs',
         });
       }
+      await publishLiveJobAlert({
+        id: jobId,
+        title: localJob?.title,
+        pricePerTask: localJob?.price_per_task,
+        totalSlots: localJob?.total_slots,
+        category: localJob?.category,
+        ownerId: localJob?.owner_id,
+      });
       window.dispatchEvent(new CustomEvent('iz_jobs_updated'));
       return;
     }
@@ -1086,14 +1156,32 @@ export async function adminApproveJob(jobId: string): Promise<void> {
         title: 'জব ক্যাম্পেইন লাইভ! 🚀',
         message: `আপনার পোস্ট করা নতুন মিশন "${job?.title || 'Job'}" অ্যাডমিন কর্তৃক অনুমোদিত হয়েছে এবং সরাসরি লাইভ করা হয়েছে।`,
         type: 'announcement',
+        url: '/my-jobs',
       });
     }
+
+    await publishLiveJobAlert({
+      id: jobId,
+      title: job?.title,
+      pricePerTask: job?.price_per_task,
+      totalSlots: job?.total_slots,
+      category: job?.category,
+      ownerId,
+    });
 
     window.dispatchEvent(new CustomEvent('iz_jobs_updated'));
     window.dispatchEvent(new CustomEvent('iz_users_updated'));
   } catch (err) {
     if (isTableMissingError(err)) {
-      updateLocalJob(jobId, { status: 'active' });
+      const localJob = updateLocalJob(jobId, { status: 'active' });
+      await publishLiveJobAlert({
+        id: jobId,
+        title: localJob?.title,
+        pricePerTask: localJob?.price_per_task,
+        totalSlots: localJob?.total_slots,
+        category: localJob?.category,
+        ownerId: localJob?.owner_id,
+      });
       return;
     }
     throw err;
@@ -1192,6 +1280,7 @@ export async function adminRejectJob(jobId: string, reason = 'Violates platform 
         title: 'জব পোস্ট বাতিল ও রিফান্ড ⚠️',
         message: `আপনার পোস্ট করা মিশন "${job.title || 'Job'}" বাতিল করা হয়েছে। কারণ: ${reason}। অব্যবহৃত $${refundAmount.toFixed(2)} ডিপোজিট ব্যালেন্সে ফেরত দেওয়া হয়েছে।`,
         type: 'announcement',
+        url: '/my-jobs',
       });
     }
 
