@@ -29,7 +29,11 @@ import {
   syncRemoteUserNotifications,
   flushPendingDeviceNotifications,
   clearLocalNotifications,
-  isInsideEmbeddedIframe
+  isInsideEmbeddedIframe,
+  markAllExistingNotificationsNativeDone,
+  ensureWebPushSubscription,
+  isWebPushSubscribedLocal,
+  sendTestServerWebPush,
 } from '../lib/localFallbackStore';
 import toast from 'react-hot-toast';
 
@@ -39,14 +43,17 @@ export default function NotificationsPage() {
   const [activeFilter, setActiveFilter] = useState<'all' | 'deposit' | 'withdrawal' | 'task' | 'broadcast'>('all');
   const [permissionState, setPermissionState] = useState<string>(() => getNotificationPermissionState());
   const [testingNotif, setTestingNotif] = useState(false);
+  const [bgPushActive, setBgPushActive] = useState<boolean>(() => isWebPushSubscribedLocal(user?.uid));
   const inIframe = isInsideEmbeddedIframe();
 
   useEffect(() => {
     const state = getNotificationPermissionState();
     setPermissionState(state);
     if (state === 'granted') {
-      void registerNotificationServiceWorker().then(() => {
+      void registerNotificationServiceWorker().then(async () => {
         if (user?.uid) {
+          const pushRes = await ensureWebPushSubscription(user.uid);
+          setBgPushActive(pushRes.subscribed || isWebPushSubscribedLocal(user.uid));
           void flushPendingDeviceNotifications(user.uid);
         }
       });
@@ -57,8 +64,13 @@ export default function NotificationsPage() {
     const perm = await requestNativeNotificationPermission();
     setPermissionState(perm);
     if (perm === 'granted') {
+      if (user?.uid) {
+        markAllExistingNotificationsNativeDone(user.uid);
+        const pushRes = await ensureWebPushSubscription(user.uid);
+        setBgPushActive(pushRes.subscribed);
+      }
       const title = 'ফোনের সিস্টেমে নোটিফিকেশন একটিভ! 🔔';
-      const message = 'এখন আপনার ডিভাইসে সমস্ত নতুন জব, টাস্ক, ডিপোজিট ও উইথড্র আপডেট সরাসরি নোটিফিকেশনে চলে আসবে।';
+      const message = 'এখন আপনার ডিভাইসে সমস্ত নতুন জব, টাস্ক, ডিপোজিট ও উইথড্র আপডেট যেকোনো সময় চলে আসবে—অ্যাপ বন্ধ থাকলেও।';
       const result = await showDeviceNotification(title, message, { tag: 'welcome_push_page', url: '/notifications' });
       if (user?.uid) {
         saveLocalNotification(user.uid, {
@@ -67,10 +79,9 @@ export default function NotificationsPage() {
           message,
           type: 'announcement',
         }, { skipRemoteSync: true, skipNative: true, markNativeDone: true });
-        void flushPendingDeviceNotifications(user.uid);
       }
       if (result.shown) {
-        toast.success('ফোনের নোটিফিকেশন চালু হয়েছে! 🎉 আপনার ফোনের নোটিফিকেশন বার চেক করুন।');
+        toast.success('ফোনের নোটিফিকেশন চালু হয়েছে! 🎉 এখন অন্য অ্যাপে থাকলেও নোটিফিকেশন আসবে।');
       } else {
         toast.error(result.reason || 'নোটিফিকেশন পারমিশন চালু হয়েছে, তবে ডিভাইসে পপআপ দেখানো যায়নি।');
       }
@@ -84,6 +95,15 @@ export default function NotificationsPage() {
   const handleSendTestNotification = async () => {
     setTestingNotif(true);
     try {
+      if (user?.uid) {
+        const pushTest = await sendTestServerWebPush(user.uid);
+        if (pushTest.ok) {
+          setBgPushActive(true);
+          toast.success('সার্ভার ব্যাকগ্রাউন্ড Web Push টেস্ট পাঠানো হয়েছে! অ্যাপ বন্ধ থাকলেও এভাবেই ফোনে আসবে।');
+          return;
+        }
+      }
+
       const result = await showDeviceNotification(
         'টেস্ট নোটিফিকেশন সফল! 🔔',
         'অভিনন্দন! আপনার ফোনে IncomeZone-এর নোটিফিকেশন সঠিকভাবে কাজ করছে।',
@@ -318,13 +338,18 @@ export default function NotificationsPage() {
         ) : permissionState === 'granted' ? (
           <div className="mt-5 p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-800 dark:text-emerald-300">
             <div className="space-y-1">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <Sparkles className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                <span className="font-bold">ডিভাইস নোটিফিকেশন সক্রিয় (System Notifications Enabled)</span>
+                <span className="font-bold">ডিভাইস নোটিফিকেশন সক্রিয় (Background Web Push)</span>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 font-bold">
-                  Active
+                  {bgPushActive ? '24/7 Background Active' : 'Active'}
                 </span>
               </div>
+              <p className="text-[11px] text-emerald-700/80 dark:text-emerald-300/80 font-medium">
+                {bgPushActive
+                  ? 'ওয়েবসাইট বন্ধ থাকলেও বা অন্য অ্যাপ চালানোর সময়ও গুরুত্বপূর্ণ আপডেট ফোনে পৌঁছে যাবে।'
+                  : 'ব্যাকগ্রাউন্ড পুশ সিঙ্ক করতে একবার Test Notification চাপুন বা Chrome-এ ওপেন করুন।'}
+              </p>
               {inIframe && (
                 <p className="text-[11px] text-amber-700 dark:text-amber-300 font-medium">
                   প্রিভিউ মোডের পরিবর্তে সরাসরি ফোনের Chrome ব্রাউজারে ওপেন করলে ফোনের নোটিফিকেশন বারে সবচেয়ে ভালো কাজ করে।

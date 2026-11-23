@@ -942,6 +942,17 @@ export const markNativeNotified = (userId: string, ids: string[]) => {
   } catch {}
 };
 
+export const markAllExistingNotificationsNativeDone = (userId: string) => {
+  if (!userId) return;
+  try {
+    const list = getLocalNotifications(userId);
+    const ids = list.map((n) => n.id).filter(Boolean);
+    if (ids.length > 0) {
+      markNativeNotified(userId, ids);
+    }
+  } catch {}
+};
+
 const waitForServiceWorkerActive = async (reg: ServiceWorkerRegistration, timeoutMs = 4500): Promise<boolean> => {
   if (reg.active) return true;
   const pendingWorker = reg.installing || reg.waiting;
@@ -988,13 +999,30 @@ export const registerNotificationServiceWorker = async (): Promise<ServiceWorker
   }
 };
 
-// Serialize OS notifications with a tiny delay so Android Chrome does not coalesce or drop rapid bursts
+// Serialize OS notifications and prevent burst floods that Android Chrome flags as "Possible spam"
 let deviceNotifQueue: Promise<void> = Promise.resolve();
+const inFlightNativeIds = new Set<string>();
+const NATIVE_BURST_COOLDOWN_MS = 20 * 1000;
+
+const getLastNativePushTime = (userId: string): number => {
+  try {
+    const raw = localStorage.getItem(`iz_last_native_push_${userId}`);
+    return raw ? Number(raw) || 0 : 0;
+  } catch {
+    return 0;
+  }
+};
+
+const setLastNativePushTime = (userId: string, ts = Date.now()) => {
+  try {
+    localStorage.setItem(`iz_last_native_push_${userId}`, String(ts));
+  } catch {}
+};
 
 const showDeviceNotificationInternal = async (
   title: string,
   message: string,
-  options?: { tag?: string; url?: string }
+  options?: { tag?: string; url?: string; silent?: boolean }
 ): Promise<{ shown: boolean; method?: 'sw' | 'window'; reason?: string }> => {
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return { shown: false, reason: 'এই ব্রাউজারে সিস্টেম নোটিফিকেশন সাপোর্ট করে না।' };
@@ -1005,13 +1033,14 @@ const showDeviceNotificationInternal = async (
 
   const tag = options?.tag || `iz_${Date.now()}`;
   const targetUrl = options?.url || '/notifications';
-  const notifOptions: NotificationOptions & { renotify?: boolean; vibrate?: number[] } = {
+  const isSilent = Boolean(options?.silent);
+  const notifOptions: NotificationOptions & { renotify?: boolean } = {
     body: message,
     icon: NOTIF_ICON_PATH,
     badge: NOTIF_ICON_PATH,
     tag,
-    renotify: true,
-    vibrate: [200, 100, 200],
+    renotify: false,
+    silent: isSilent,
     data: { url: targetUrl },
   };
 
@@ -1029,6 +1058,7 @@ const showDeviceNotificationInternal = async (
         body: message,
         tag,
         url: targetUrl,
+        silent: isSilent,
       });
       return { shown: true, method: 'sw' };
     }
@@ -1042,6 +1072,7 @@ const showDeviceNotificationInternal = async (
       body: message,
       icon: NOTIF_ICON_PATH,
       tag,
+      silent: isSilent,
     });
     nativeNotif.onclick = () => {
       try {
@@ -1066,13 +1097,13 @@ const showDeviceNotificationInternal = async (
 export const showDeviceNotification = (
   title: string,
   message: string,
-  options?: { tag?: string; url?: string }
+  options?: { tag?: string; url?: string; silent?: boolean }
 ): Promise<{ shown: boolean; method?: 'sw' | 'window'; reason?: string }> => {
   return new Promise((resolve) => {
     deviceNotifQueue = deviceNotifQueue.then(async () => {
       const res = await showDeviceNotificationInternal(title, message, options);
       resolve(res);
-      await new Promise((r) => setTimeout(r, 180));
+      await new Promise((r) => setTimeout(r, 800));
     });
   });
 };
@@ -1110,20 +1141,36 @@ const dispatchDeviceNotificationForItem = async (
   const activeUid = getActiveSessionUserId();
   if (activeUid && activeUid !== userId) return false;
 
+  const lockKey = `${userId}:${item.id}`;
+  if (inFlightNativeIds.has(lockKey)) return false;
+
   const alreadyNotified = getNativeNotifiedIds(userId);
   if (alreadyNotified.has(item.id)) return false;
 
-  const url = resolveNotificationUrl(item.type, item.url || fallbackUrl);
-  const res = await showDeviceNotification(item.title, item.message, {
-    tag: item.id,
-    url,
-  });
-
-  if (res.shown) {
+  inFlightNativeIds.add(lockKey);
+  try {
+    // Re-check after lock and mark synchronously before async queue so concurrent calls never duplicate
     markNativeNotified(userId, [item.id]);
-    return true;
+
+    const now = Date.now();
+    const lastPush = getLastNativePushTime(userId);
+    const withinCooldown = now - lastPush < NATIVE_BURST_COOLDOWN_MS;
+    if (!withinCooldown) {
+      setLastNativePushTime(userId, now);
+    }
+
+    const url = resolveNotificationUrl(item.type, item.url || fallbackUrl);
+    const res = await showDeviceNotification(item.title, item.message, {
+      // Coalesce rapid bursts under a shared tag silently so Chrome Android doesn't trigger "Possible spam"
+      tag: withinCooldown ? `iz_updates_${userId}` : item.id,
+      url: withinCooldown ? '/notifications' : url,
+      silent: withinCooldown,
+    });
+
+    return res.shown;
+  } finally {
+    inFlightNativeIds.delete(lockKey);
   }
-  return false;
 };
 
 export const flushPendingDeviceNotifications = async (userId: string): Promise<void> => {
@@ -1136,20 +1183,224 @@ export const flushPendingDeviceNotifications = async (userId: string): Promise<v
     if (!list.length) return;
 
     const notifiedSet = getNativeNotifiedIds(userId);
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - 6 * 60 * 60 * 1000;
 
-    // Send oldest unseen first so the newest notification stays at the top of the phone tray
-    const pending = list
-      .filter((n) => {
-        if (!n || !n.id || n.read || notifiedSet.has(n.id)) return false;
-        const ts = n.created_at ? new Date(n.created_at).getTime() : Date.now();
-        return Number.isNaN(ts) || ts >= cutoff;
-      })
-      .reverse();
+    // Collect unseen notifications from the recent window (list is newest-first)
+    const pending = list.filter((n) => {
+      if (!n || !n.id || n.read || notifiedSet.has(n.id)) return false;
+      if (inFlightNativeIds.has(`${userId}:${n.id}`)) return false;
+      const ts = n.created_at ? new Date(n.created_at).getTime() : Date.now();
+      return Number.isNaN(ts) || ts >= cutoff;
+    });
 
-    for (const item of pending) {
-      await dispatchDeviceNotificationForItem(userId, item);
+    if (pending.length === 0) return;
+
+    if (pending.length === 1) {
+      await dispatchDeviceNotificationForItem(userId, pending[0]);
+      return;
     }
+
+    // Bundle multiple simultaneous pending updates into 1 clean digest notification to prevent Chrome spam warnings
+    const pendingIds = pending.map((n) => n.id);
+    pendingIds.forEach((id) => inFlightNativeIds.add(`${userId}:${id}`));
+    try {
+      markNativeNotified(userId, pendingIds);
+      const latest = pending[0];
+      const now = Date.now();
+      const withinCooldown = now - getLastNativePushTime(userId) < NATIVE_BURST_COOLDOWN_MS;
+      if (!withinCooldown) {
+        setLastNativePushTime(userId, now);
+      }
+
+      await showDeviceNotification(
+        `${latest.title} (+আরও ${pending.length - 1}টি আপডেট)`,
+        latest.message,
+        {
+          tag: `iz_updates_${userId}`,
+          url: '/notifications',
+          silent: withinCooldown,
+        }
+      );
+    } finally {
+      pendingIds.forEach((id) => inFlightNativeIds.delete(`${userId}:${id}`));
+    }
+  } catch {}
+};
+
+const urlBase64ToUint8Array = (base64String: string): Uint8Array => {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+};
+
+const areUint8ArraysEqual = (a: Uint8Array, b: Uint8Array): boolean => {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+};
+
+const getAuthBearerHeaders = async (): Promise<Record<string, string>> => {
+  try {
+    const { data } = await supabase.auth.getSession();
+    const token = data?.session?.access_token;
+    if (token) {
+      return {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      };
+    }
+  } catch {}
+  return { 'Content-Type': 'application/json' };
+};
+
+let inFlightPushSubscribe: Promise<{ subscribed: boolean; reason?: string }> | null = null;
+
+export const ensureWebPushSubscription = async (
+  userId: string
+): Promise<{ subscribed: boolean; reason?: string }> => {
+  if (!userId || typeof window === 'undefined') {
+    return { subscribed: false, reason: 'No active user session' };
+  }
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return { subscribed: false, reason: 'এই ব্রাউজারে ব্যাকগ্রাউন্ড Web Push সাপোর্ট করে না।' };
+  }
+  if (getNotificationPermissionState() !== 'granted') {
+    return { subscribed: false, reason: 'নোটিফিকেশন পারমিশন এখনো Allow করা হয়নি।' };
+  }
+
+  if (inFlightPushSubscribe) return inFlightPushSubscribe;
+
+  inFlightPushSubscribe = (async () => {
+    try {
+      const reg = await registerNotificationServiceWorker();
+      if (!reg || !reg.pushManager) {
+        return { subscribed: false, reason: 'Service Worker রেজিস্টার করা যায়নি।' };
+      }
+
+      const keyResp = await fetch('/api/push/vapid-public-key');
+      if (!keyResp.ok) {
+        return { subscribed: false, reason: 'Push সার্ভার কী পাওয়া যায়নি।' };
+      }
+      const { publicKey } = await keyResp.json();
+      if (!publicKey || typeof publicKey !== 'string') {
+        return { subscribed: false, reason: 'VAPID public key অনুপস্থিত।' };
+      }
+
+      const targetKeyBytes = urlBase64ToUint8Array(publicKey);
+      let sub = await reg.pushManager.getSubscription();
+
+      if (sub && sub.options?.applicationServerKey) {
+        const currentKeyBytes = new Uint8Array(sub.options.applicationServerKey);
+        if (!areUint8ArraysEqual(currentKeyBytes, targetKeyBytes)) {
+          try {
+            await sub.unsubscribe();
+          } catch {}
+          sub = null;
+        }
+      }
+
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: targetKeyBytes,
+        });
+      }
+
+      const headers = await getAuthBearerHeaders();
+      const saveResp = await fetch('/api/push/subscribe', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          userId,
+          subscription: sub.toJSON(),
+        }),
+      });
+
+      if (!saveResp.ok) {
+        return { subscribed: false, reason: 'সার্ভারে পুশ সাবস্ক্রিপশন সংরক্ষণ করা যায়নি।' };
+      }
+
+      localStorage.setItem(`iz_web_push_active_${userId}`, 'true');
+      return { subscribed: true };
+    } catch (err: any) {
+      return {
+        subscribed: false,
+        reason: err?.message || 'ব্যাকগ্রাউন্ড পুশ সাবস্ক্রিপশন চালু করতে সমস্যা হয়েছে।',
+      };
+    } finally {
+      inFlightPushSubscribe = null;
+    }
+  })();
+
+  return inFlightPushSubscribe;
+};
+
+export const isWebPushSubscribedLocal = (userId?: string): boolean => {
+  if (!userId || typeof window === 'undefined') return false;
+  return localStorage.getItem(`iz_web_push_active_${userId}`) === 'true';
+};
+
+export const sendTestServerWebPush = async (
+  userId: string
+): Promise<{ ok: boolean; delivered: number }> => {
+  try {
+    await ensureWebPushSubscription(userId);
+    const headers = await getAuthBearerHeaders();
+    const resp = await fetch('/api/push/test', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ userId }),
+    });
+    if (!resp.ok) return { ok: false, delivered: 0 };
+    const json = await resp.json();
+    return { ok: Boolean(json?.ok), delivered: Number(json?.delivered || 0) };
+  } catch {
+    return { ok: false, delivered: 0 };
+  }
+};
+
+export const triggerServerPushForUser = async (
+  userId: string,
+  item: UserNotificationItem
+): Promise<void> => {
+  if (!userId || !item?.id) return;
+  try {
+    const headers = await getAuthBearerHeaders();
+    await fetch('/api/push/send', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        userId,
+        title: item.title,
+        message: item.message,
+        url: item.url || '/notifications',
+        tag: item.id,
+      }),
+    });
+  } catch {}
+};
+
+export const triggerServerPushBroadcast = async (payload: {
+  title: string;
+  message: string;
+  url?: string;
+  tag?: string;
+  excludeUserId?: string;
+}): Promise<void> => {
+  try {
+    const headers = await getAuthBearerHeaders();
+    await fetch('/api/push/broadcast', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
   } catch {}
 };
 
@@ -1193,6 +1444,8 @@ export const pushRemoteUserNotification = (
             },
             { onConflict: 'key' }
           );
+
+        void triggerServerPushForUser(userId, item);
       } catch {
         // Non-blocking best-effort cross-device sync
       }

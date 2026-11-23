@@ -44,6 +44,9 @@ import {
   getDeletedBroadcastIdsLocal,
   saveDeletedBroadcastIdsLocal,
   removeUserNotificationsByIds,
+  markAllExistingNotificationsNativeDone,
+  ensureWebPushSubscription,
+  markNativeNotified,
 } from '../lib/localFallbackStore';
 
 const SIDEBAR_LINKS = [
@@ -720,9 +723,22 @@ export default function DashboardLayout() {
     if (state === 'granted') {
       void registerNotificationServiceWorker().then(() => {
         if (user?.uid) {
+          void ensureWebPushSubscription(user.uid);
           void flushPendingDeviceNotifications(user.uid);
         }
       });
+    }
+
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator && user?.uid) {
+      const handleSwMsg = (event: MessageEvent) => {
+        if (event.data?.type === 'PUSH_DELIVERED' && event.data?.tag) {
+          markNativeNotified(user.uid, [String(event.data.tag)]);
+        }
+      };
+      navigator.serviceWorker.addEventListener('message', handleSwMsg);
+      return () => {
+        navigator.serviceWorker.removeEventListener('message', handleSwMsg);
+      };
     }
   }, [user?.uid]);
 
@@ -730,8 +746,12 @@ export default function DashboardLayout() {
     const perm = await requestNativeNotificationPermission();
     setNotifPermission(perm);
     if (perm === 'granted') {
+      if (user?.uid) {
+        markAllExistingNotificationsNativeDone(user.uid);
+        void ensureWebPushSubscription(user.uid);
+      }
       const title = 'ফোনের নোটিফিকেশন সচল হয়েছে! 🔔';
-      const message = 'আপনার ফোনে এখন সকল নতুন জব, টাস্ক এপ্রুভ/রিজেক্ট, ডিপোজিট, উইথড্র ও নোটিশ এর ইনস্ট্যান্ট নোটিফিকেশন চলে আসবে।';
+      const message = 'আপনার ফোনে এখন সকল নতুন জব, টাস্ক এপ্রুভ/রিজেক্ট, ডিপোজিট, উইথড্র ও নোটিশ যেকোনো সময় চলে আসবে—অ্যাপ বন্ধ থাকলেও।';
       const result = await showDeviceNotification(title, message, { tag: 'welcome_push_enabled', url: '/notifications' });
       if (user?.uid) {
         saveLocalNotification(user.uid, {
@@ -740,7 +760,6 @@ export default function DashboardLayout() {
           message,
           type: 'announcement',
         }, { skipRemoteSync: true, skipNative: true, markNativeDone: true });
-        void flushPendingDeviceNotifications(user.uid);
       }
       import('react-hot-toast').then(({ default: toast }) => {
         if (result.shown) {
@@ -862,6 +881,7 @@ export default function DashboardLayout() {
       }
 
       const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const freshCutoff = Date.now() - 30 * 60 * 1000;
       // Deliver active non-deleted broadcasts oldest-first so newest stays at top
       const ordered = [...broadcastsList].reverse();
       for (const bc of ordered) {
@@ -873,6 +893,7 @@ export default function DashboardLayout() {
         const bcTs = bc.created_at ? new Date(bc.created_at).getTime() : Date.now();
         if (!Number.isNaN(bcTs) && bcTs < sevenDaysAgo) continue;
 
+        const isHistorical = !Number.isNaN(bcTs) && bcTs < freshCutoff;
         const receivedKey = `iz_user_received_bc_${user.uid}_${normalizedId}`;
         if (!localStorage.getItem(receivedKey)) {
           localStorage.setItem(receivedKey, 'true');
@@ -882,7 +903,11 @@ export default function DashboardLayout() {
             message: bc.text,
             type: 'broadcast',
             created_at: bc.created_at || new Date().toISOString(),
-          }, { skipRemoteSync: true });
+          }, {
+            skipRemoteSync: true,
+            skipNative: isHistorical,
+            markNativeDone: isHistorical,
+          });
         }
       }
     } catch {}

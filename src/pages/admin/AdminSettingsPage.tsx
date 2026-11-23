@@ -7,6 +7,7 @@ import {
   AdminBroadcastMessage,
   getDeletedBroadcastIdsLocal,
   saveDeletedBroadcastIdsLocal,
+  triggerServerPushBroadcast,
 } from '../../lib/localFallbackStore';
 
 export default function AdminSettingsPage() {
@@ -369,6 +370,13 @@ export default function AdminSettingsPage() {
       } catch {}
 
       window.dispatchEvent(new CustomEvent('iz_broadcast_notification', { detail: broadcastData }));
+
+      void triggerServerPushBroadcast({
+        tag: broadcastData.id,
+        title: broadcastData.title || '📢 অ্যাডমিন অফিশিয়াল ব্রডকাস্ট নোটিশ',
+        message: broadcastData.text,
+        url: '/notifications',
+      });
 
       toast.success("সকল ইউজারের কাছে নোটিশ/মেসেজ সফলভাবে পাঠানো হয়েছে!");
       setSiteSettings(prev => ({ ...prev, broadcast_text: '' }));

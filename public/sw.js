@@ -30,15 +30,24 @@ self.addEventListener('push', (event) => {
   }
 
   event.waitUntil(
-    self.registration.showNotification(payload.title, {
-      body: payload.message,
-      icon: '/assets/aistudio/1795356168824_9e1cf2d3.jpg',
-      badge: '/assets/aistudio/1795356168824_9e1cf2d3.jpg',
-      tag: payload.tag,
-      renotify: true,
-      vibrate: [200, 100, 200],
-      data: { url: payload.url || '/notifications' },
-    })
+    Promise.all([
+      self.registration.showNotification(payload.title, {
+        body: payload.message,
+        icon: '/assets/aistudio/1795356168824_9e1cf2d3.jpg',
+        badge: '/assets/aistudio/1795356168824_9e1cf2d3.jpg',
+        tag: payload.tag,
+        renotify: false,
+        silent: Boolean(payload.silent),
+        data: { url: payload.url || '/notifications' },
+      }),
+      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+        for (const client of clientList) {
+          try {
+            client.postMessage({ type: 'PUSH_DELIVERED', tag: payload.tag });
+          } catch {}
+        }
+      }),
+    ])
   );
 });
 
@@ -57,8 +66,8 @@ self.addEventListener('message', (event) => {
       icon: '/assets/aistudio/1795356168824_9e1cf2d3.jpg',
       badge: '/assets/aistudio/1795356168824_9e1cf2d3.jpg',
       tag,
-      renotify: true,
-      vibrate: [200, 100, 200],
+      renotify: false,
+      silent: Boolean(data.silent),
       data: { url },
     })
   );

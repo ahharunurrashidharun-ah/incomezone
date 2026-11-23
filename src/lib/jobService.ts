@@ -12,6 +12,7 @@ import {
   getLocalUser,
   saveLocalUser,
   saveLocalNotification,
+  triggerServerPushBroadcast,
 } from './localFallbackStore';
 import { attachImageToDescription, parseProofScreenshots } from './jobImages';
 import { queueEmailNotification } from './notificationSender';
@@ -1072,6 +1073,16 @@ async function publishLiveJobAlert(job: {
         { onConflict: 'key' }
       );
   } catch {}
+
+  const bdt = Math.round(signal.pricePerTask * 100);
+  const slotsInfo = signal.totalSlots > 0 ? ` · ${signal.totalSlots}টি স্লট` : '';
+  void triggerServerPushBroadcast({
+    tag: `live_job_${signal.id}`,
+    title: 'নতুন জব লাইভ হয়েছে! 💼',
+    message: `"${signal.title}" — প্রতি টাস্ক $${signal.pricePerTask.toFixed(2)} (৳${bdt})${slotsInfo}। এখনই কাজ শুরু করুন!`,
+    url: '/jobs',
+    excludeUserId: signal.ownerId || undefined,
+  });
 }
 
 /**

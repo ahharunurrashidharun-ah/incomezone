@@ -1,0 +1,25 @@
+{
+  "name": "IncomeZone - Microjobs Platform",
+  "short_name": "IncomeZone",
+  "description": "Micro-job marketplace to earn and post tasks with instant notifications.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0718",
+  "theme_color": "#7c3aed",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/assets/aistudio/1795356168824_9e1cf2d3.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/aistudio/1795356168824_9e1cf2d3.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any"
+    }
+  ]
+}
